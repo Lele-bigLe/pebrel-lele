@@ -260,7 +260,8 @@ fn collect_from(root: &Path, selection: BackupSelection) -> Result<BackupArchive
                 add_file(root, category, "nebula_assistant.txt", &mut entries, identity)?
             },
             BackupCategory::Session => {
-                add_file(root, category, "session.json", &mut entries, identity)?
+                add_file(root, category, "session.json", &mut entries, identity)?;
+                add_file(root, category, "projects.json", &mut entries, identity)?;
             },
             BackupCategory::DirectoryHistory => {
                 add_file(root, category, "directory_history.json", &mut entries, identity)?
@@ -414,8 +415,12 @@ fn restore_to(root: &Path, archive: &BackupArchive) -> Result<(), String> {
         .map(|entry| restore_path(root, &entry.name))
         .collect::<Result<Vec<_>, _>>()?;
     for (entry, path) in archive.entries.iter().zip(paths) {
-        crate::atomic_file::write(&path, &entry.bytes)
-            .map_err(|error| format!("restore {}: {error}", entry.name))?;
+        let result = if entry.name == "projects.json" {
+            crate::project_library::restore(&path, &entry.bytes)
+        } else {
+            crate::atomic_file::write(&path, &entry.bytes)
+        };
+        result.map_err(|error| format!("restore {}: {error}", entry.name))?;
     }
     Ok(())
 }
@@ -485,7 +490,11 @@ fn validate_archive(archive: &BackupArchive) -> Result<(), String> {
             },
             BackupCategory::Sync => canonical == "pebrel_sync.txt",
             BackupCategory::Assistant => canonical == "pebrel_assistant.txt",
-            BackupCategory::Session => entry.name == "session.json",
+            BackupCategory::Session => {
+                entry.name == "session.json"
+                    || (entry.name == "projects.json"
+                        && crate::project_library::decode(&entry.bytes).is_ok())
+            },
             BackupCategory::DirectoryHistory => entry.name == "directory_history.json",
             BackupCategory::CommandHistory => {
                 crate::nebula_history::history_file_names().contains(&canonical)

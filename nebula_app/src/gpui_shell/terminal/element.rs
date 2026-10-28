@@ -87,23 +87,14 @@ pub struct TermLayout {
 }
 
 impl TerminalElement {
-    /// 在一次锁内通过渲染合同截取快照；锁外解析颜色与绘制。第三项是回滚
-    /// 历史行数——滚动条拇指的分母，顺着这一次锁一起取回，免得绘制路径
-    /// 为了它再抢一次 `Term` 锁。
+    /// 在一次锁内通过渲染合同截取快照；锁外解析颜色与绘制。
     fn snapshot(
         &self,
         rows: usize,
         cols: usize,
         cx: &App,
-    ) -> Option<(
-        RenderSnapshot,
-        Option<String>,
-        usize,
-        super::osc_links::LinkCells,
-        usize,
-        i64,
-        bool,
-    )> {
+    ) -> Option<(RenderSnapshot, Option<String>, super::osc_links::LinkCells, usize, i64, bool)>
+    {
         let view = self.view.read(cx);
         let session = view.session.as_ref()?;
         let hint_config = view.hint_config.clone();
@@ -134,7 +125,6 @@ impl TerminalElement {
         Some((
             snapshot,
             prompt_line,
-            history,
             dashed,
             scrollback_floor,
             viewport_top_abs,
@@ -325,7 +315,6 @@ impl Element for TerminalElement {
         let Some((
             mut snap,
             prompt_line,
-            history,
             mut dashed,
             scrollback_floor,
             viewport_top_abs,
@@ -1003,23 +992,6 @@ impl Element for TerminalElement {
                     cx,
                 );
             }
-        }
-
-        // Overlay 滚动条：可见性由用户策略和拖拽状态共同决定。
-        // 几何来自 view 的单一真值源——命中测试拿的是同一个矩形（旧壳
-        // `draw_scrollbar` / `scrollbar_grab` 共用 `scrollbar_geometry` 同构）。
-        let (dragging, thumb) = {
-            let view = self.view.read(cx);
-            (view.scrollbar_highlighted(), view.scrollbar_thumb(snap.display_offset, history))
-        };
-        if let Some(thumb) = thumb {
-            let color = if dragging {
-                cx.theme().scrollbar_thumb_hover
-            } else {
-                cx.theme().scrollbar_thumb
-            };
-            let radius = thumb.size.width / 2.0;
-            window.paint_quad(fill(thumb, color).corner_radii(radius));
         }
 
         let (bell_flash, link_hover) = {

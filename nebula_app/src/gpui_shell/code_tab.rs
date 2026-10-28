@@ -17,6 +17,11 @@ use gpui::{
 use crate::display::side_panel::GitLocation;
 use crate::gpui_shell::prelude::*;
 
+mod diff;
+pub(in crate::gpui_shell) use diff::DiffPosition;
+mod review;
+pub(in crate::gpui_shell) use review::{Draft, RetainedReview};
+
 /// 一次性读入的上限。行级虚拟化解决的是渲染成本，解析/塑形仍随内容量
 /// 增长；8MB 已覆盖常见源码文件，超限的普通文件截断，冲突文件则拒绝写回。
 const MAX_CODE_BYTES: usize = 8 * 1024 * 1024;
@@ -81,7 +86,9 @@ pub fn viewable_file(path: &Path) -> bool {
 
 pub enum CodeTabViewEvent {
     GitConflictResolved,
+    GitStateInvalidated,
     Changed,
+    ReviewRequested,
 }
 
 impl EventEmitter<CodeTabViewEvent> for CodeTabView {}
@@ -141,6 +148,7 @@ pub struct CodeTabView {
     notice: Option<String>,
     lines: usize,
     merge: Option<MergeEditor>,
+    diff: Option<diff::DiffPreview>,
     file: Option<Entity<super::file_editor::TextFileView>>,
     _file_subscription: Option<gpui::Subscription>,
 }
@@ -165,6 +173,7 @@ impl CodeTabView {
             notice: None,
             lines: 0,
             merge: None,
+            diff: None,
             file: Some(file),
             _file_subscription: Some(subscription),
         }
@@ -210,6 +219,7 @@ impl CodeTabView {
             lines: 0,
             file: None,
             _file_subscription: None,
+            diff: None,
             merge: Some(MergeEditor {
                 key: MergeKey { location, relative_path },
                 ours,
@@ -226,7 +236,7 @@ impl CodeTabView {
     }
 
     pub fn is_regular_path(&self, path: &Path) -> bool {
-        self.merge.is_none() && self.path == path
+        self.file.is_some() && self.path == path
     }
 
     pub fn matches_git_merge(&self, location: &GitLocation, relative_path: &str) -> bool {
@@ -235,6 +245,10 @@ impl CodeTabView {
 
     /// 重新读盘（文件树再次双击同一路径时宿主调用）。
     pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.diff.is_some() {
+            self.reload_git_diff(window, cx);
+            return;
+        }
         if self.merge.is_some() {
             self.reload_git_merge(window, cx);
             return;
@@ -502,8 +516,14 @@ impl CodeTabView {
 }
 
 impl Render for CodeTabView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.merge.is_some() { self.render_merge(cx) } else { self.render_file(cx) }
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.diff.is_some() {
+            self.render_git_diff(window, cx)
+        } else if self.merge.is_some() {
+            self.render_merge(cx)
+        } else {
+            self.render_file(cx)
+        }
     }
 }
 

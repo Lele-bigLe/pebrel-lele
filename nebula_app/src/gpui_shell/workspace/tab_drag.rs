@@ -117,6 +117,19 @@ impl NebulaWorkspace {
         (drag.source as isize + slots).clamp(0, len.saturating_sub(1) as isize) as usize
     }
 
+    pub(super) fn tab_drag_target(&self, drag: &TabDrag) -> usize {
+        if drag.axis == TabDragAxis::Horizontal {
+            return Self::drag_slot(drag, self.tabs.len());
+        }
+        let indices = self.sidebar_tab_indices();
+        let Some(source) = indices.iter().position(|&ix| ix == drag.source) else {
+            return drag.source;
+        };
+        let slots = (drag.offset / drag.pitch.max(1.0)).round() as isize;
+        let target = (source as isize + slots).clamp(0, indices.len().saturating_sub(1) as isize);
+        indices[target as usize]
+    }
+
     pub(super) fn update_tab_drag(
         &mut self,
         event: &gpui::MouseMoveEvent,
@@ -160,7 +173,13 @@ impl NebulaWorkspace {
     }
 
     fn update_tab_drag_position(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
-        let len = self.tabs.len();
+        let current_drag = self.tab_drag.as_ref().expect("checked above");
+        let (source_position, len) = if current_drag.axis == TabDragAxis::Vertical {
+            let indices = self.sidebar_tab_indices();
+            (indices.iter().position(|&ix| ix == current_drag.source).unwrap_or(0), indices.len())
+        } else {
+            (current_drag.source, self.tabs.len())
+        };
         // dock 必须在可变借用 drag 前计算；只有两个 Terminal tab 之间允许。
         let source = self.tab_drag.as_ref().map(|drag| drag.source);
         let dock =
@@ -176,8 +195,8 @@ impl NebulaWorkspace {
                 TabDragAxis::Vertical => dy,
                 TabDragAxis::Horizontal => dx,
             };
-            let before = -(drag.source as f32) * drag.pitch;
-            let after = (len.saturating_sub(1) as f32 - drag.source as f32) * drag.pitch;
+            let before = -(source_position as f32) * drag.pitch;
+            let after = (len.saturating_sub(1) as f32 - source_position as f32) * drag.pitch;
             drag.offset = delta.clamp(before, after.max(before));
             drag.dock = dock;
             cx.notify();
@@ -191,7 +210,7 @@ impl NebulaWorkspace {
             if let Some(nav) = drag.dock {
                 self.dock_tab_into_active(drag.source, nav, window, cx);
             } else {
-                let target = Self::drag_slot(&drag, self.tabs.len());
+                let target = self.tab_drag_target(&drag);
                 self.move_tab(drag.source, target, window, cx);
             }
         }

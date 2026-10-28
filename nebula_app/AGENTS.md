@@ -17,5 +17,17 @@
 - 新终端代理保持选定协议，不把 SOCKS 改写成 HTTP。见 [`terminal proxy scheme`](../architecture/notes/nebula_app/ssh_proxy/2026-09-29-terminal-proxy-scheme.md)。
 - WSL pane 的发行版快照与分屏/新标签继承见 [`shell_detect`](../architecture/notes/nebula_app/shell_detect/)；WSL zsh 启动注入见 [`platform`](../architecture/notes/nebula_app/platform/2026-09-28-wsl-zsh-startup-integration.md)。
 - SSH Files 的 pane cwd 跟随、手动浏览快照与取消归属见 [`remote_files`](../architecture/notes/nebula_app/gpui_shell/workspace/remote_files/)。
+- 项目归属、会话筛选与可见行映射见 [`projects`](../architecture/notes/nebula_app/gpui_shell/workspace/projects/)。
+- 独立项目库、跨窗口事务和会话备份归属见 [`project_library`](../architecture/notes/nebula_app/project_library/)。
+- 原生用量统计、Codex 额度及设置页权益操作的所有权见 [`ai_usage`](../architecture/notes/nebula_app/ai_usage/)；多窗口与设置共用的官方额度快照见 [`codex_quota`](../architecture/notes/nebula_app/gpui_shell/codex_quota/)。
+- 原生历史索引、按项目筛选与恢复归属见 [`ai_sessions`](../architecture/notes/nebula_app/ai_sessions/)。
+- 只读 Git 差异预览与共享执行边界见 [`code_tab`](../architecture/notes/nebula_app/gpui_shell/code_tab/)。
+- 审阅批注固定到差异快照，依据同上 `code_tab` 目录；跨窗目标与新建 CLI 的手动发送边界见 [`send_to_chat`](../architecture/notes/nebula_app/gpui_shell/workspace/send_to_chat/)。
+- 项目文件树和右侧 Git 共用快照、搜索及异步收割，依据见 [`side_panel`](../architecture/notes/nebula_app/display/side_panel/)。
+- 左侧会话树复用原生标签与分屏身份，文件浏览回到独立抽屉；当前决定见 [`project_tree`](../architecture/notes/nebula_app/gpui_shell/workspace/project_tree/)。
+- 本窗口任务中心只投影既有会话状态与通知，依据见 [`notifications`](../architecture/notes/nebula_app/gpui_shell/workspace/notifications/)。
+- 项目启动模板与命名布局的存储/启动边界见 [`recipes`](../architecture/notes/nebula_app/gpui_shell/workspace/recipes/)。
+- Worktree 列表、创建与项目定位的所有权见 [`vcs_panel`](../architecture/notes/nebula_app/gpui_shell/workspace/vcs_panel/)。
+- 坚果云 WebDAV 服务根地址、归档目录与只读连接检查见 [`backup_remote`](../architecture/notes/nebula_app/backup_remote/)。
 - Windows Acrylic 的运行库回退与窗口生命周期见 [`platform`](../architecture/notes/nebula_app/platform/2026-09-22-acrylic-controller.md)。
 - Windows Acrylic 的动画期间透明回退与计时边界见 [`窗口状态切换`](../architecture/notes/nebula_app/platform/2026-09-22-acrylic-window-transitions.md)。

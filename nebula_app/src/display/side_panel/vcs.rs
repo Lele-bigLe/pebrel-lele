@@ -9,6 +9,10 @@ pub(crate) fn git_pull_args() -> Vec<String> {
     vec!["pull".into(), "--ff-only".into()]
 }
 
+fn git_commit_args(message: &str) -> Vec<String> {
+    vec!["commit".into(), "-m".into(), message.to_owned()]
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SvnMutation {
     Add(Vec<PathBuf>),
@@ -270,10 +274,22 @@ impl SidePanel {
     /// take seconds over the network). Completion flips `op_done`, which the
     /// next drawn frame folds into a refresh.
     fn spawn_vcs_at(&mut self, program: PathBuf, args: Vec<OsString>, root: PathBuf) {
+        let _ = self.spawn_vcs_batch_at(program, vec![args], root);
+    }
+
+    /// One mutation slot covers the entire sequence; later steps require success.
+    /// The ticket reports the first step, so a failed push cannot erase a successful commit.
+    fn spawn_vcs_batch_at(
+        &mut self,
+        program: PathBuf,
+        steps: Vec<Vec<OsString>>,
+        root: PathBuf,
+    ) -> Option<std::sync::mpsc::Receiver<bool>> {
         use std::sync::atomic::Ordering;
-        if self.op_running.swap(true, Ordering::Relaxed) {
-            return; // one at a time
+        if steps.is_empty() || self.op_running.swap(true, Ordering::Relaxed) {
+            return None;
         }
+        let (sender, receiver) = std::sync::mpsc::channel();
         let running = self.op_running.clone();
         let done = self.op_done.clone();
         let error = self.op_error.clone();
@@ -283,21 +299,38 @@ impl SidePanel {
         let display_name = program.display().to_string();
         let spawn_result =
             std::thread::Builder::new().name("nebula-vcs-op".into()).spawn(move || {
-                let mut cmd = std::process::Command::new(&program);
-                cmd.args(&args).current_dir(&root);
-                crate::platform::process::hidden_command(&mut cmd);
-                let msg = match cmd.output() {
-                    Ok(out) if out.status.success() => PanelNotice::default(),
-                    Ok(out) => {
-                        let err = String::from_utf8_lossy(&out.stderr);
-                        // First meaningful line is enough for a status strip.
-                        err.lines()
-                            .find(|l| !l.trim().is_empty())
-                            .map(|line| PanelNotice::Raw(line.to_owned()))
-                            .unwrap_or_else(|| PanelNotice::CommandFailed(display_name.clone()))
-                    },
-                    Err(e) => PanelNotice::Raw(format!("{display_name}: {e}")),
-                };
+                let mut msg = PanelNotice::default();
+                for (index, args) in steps.into_iter().enumerate() {
+                    let mut cmd = std::process::Command::new(&program);
+                    cmd.args(&args).current_dir(&root);
+                    crate::platform::process::hidden_command(&mut cmd);
+                    let (success, failure) = match cmd.output() {
+                        Ok(out) if out.status.success() => (true, PanelNotice::default()),
+                        Ok(out) => {
+                            let err = String::from_utf8_lossy(&out.stderr);
+                            let notice = err
+                                .lines()
+                                .find(|line| !line.trim().is_empty())
+                                .map(|line| PanelNotice::Raw(line.to_owned()))
+                                .unwrap_or_else(|| {
+                                    PanelNotice::CommandFailed(display_name.clone())
+                                });
+                            (false, notice)
+                        },
+                        Err(error) => (false, PanelNotice::Raw(format!("{display_name}: {error}"))),
+                    };
+                    if index == 0 {
+                        let _ = sender.send(success);
+                    }
+                    if !success {
+                        msg = if index > 0 {
+                            PanelNotice::CommitPushFailed(Box::new(failure))
+                        } else {
+                            failure
+                        };
+                        break;
+                    }
+                }
                 if let Ok(mut slot) = error.lock() {
                     *slot = msg;
                 }
@@ -307,7 +340,9 @@ impl SidePanel {
         if let Err(spawn_error) = spawn_result {
             self.op_running.store(false, Ordering::Relaxed);
             self.set_op_error(PanelNotice::TaskStartFailed(spawn_error.to_string()));
+            return None;
         }
+        Some(receiver)
     }
 
     fn spawn_vcs(&mut self, program: impl Into<PathBuf>, args: Vec<OsString>) {
@@ -316,8 +351,15 @@ impl SidePanel {
     }
 
     fn spawn_git(&mut self, args: Vec<String>) {
+        let _ = self.spawn_git_batch(vec![args]);
+    }
+
+    fn spawn_git_batch(
+        &mut self,
+        steps: Vec<Vec<String>>,
+    ) -> Option<std::sync::mpsc::Receiver<bool>> {
         if let Some(located) = self.followed_wsl.clone() {
-            let mut guest_args: Vec<OsString> = [
+            let prefix: Vec<OsString> = [
                 "-d",
                 located.distro.as_str(),
                 "--exec",
@@ -329,11 +371,21 @@ impl SidePanel {
             .into_iter()
             .map(OsString::from)
             .collect();
-            guest_args.extend(args.into_iter().map(OsString::from));
+            let steps = steps
+                .into_iter()
+                .map(|args| {
+                    prefix.iter().cloned().chain(args.into_iter().map(OsString::from)).collect()
+                })
+                .collect();
             let host_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            self.spawn_vcs_at(PathBuf::from("wsl.exe"), guest_args, host_cwd);
+            self.spawn_vcs_batch_at(PathBuf::from("wsl.exe"), steps, host_cwd)
         } else {
-            self.spawn_vcs("git", args.into_iter().map(OsString::from).collect());
+            let root = self.vcs_root()?.to_path_buf();
+            let steps = steps
+                .into_iter()
+                .map(|args| args.into_iter().map(OsString::from).collect())
+                .collect();
+            self.spawn_vcs_batch_at(PathBuf::from("git"), steps, root)
         }
     }
 
@@ -430,6 +482,72 @@ impl SidePanel {
         }
     }
 
+    /// The path form resets only the index, including before the first commit.
+    pub fn git_unstage_all(&mut self) {
+        if self.vcs() == Some(VcsKind::Git)
+            && self.git.as_ref().is_some_and(|info| !info.staged.is_empty())
+            && !self.op_running()
+        {
+            self.spawn_git(vec!["reset".into(), "--".into(), ":/".into()]);
+        }
+    }
+
+    pub fn git_switch_branch(&mut self, name: &str, create: bool) -> bool {
+        if self.vcs() != Some(VcsKind::Git) || self.op_running() {
+            return false;
+        }
+        // Git validates branch spelling. Never accept option-like input or
+        // request force, discard, merge or remote guessing.
+        if name.is_empty() || name.starts_with('-') || name.contains('\0') {
+            return false;
+        }
+        let mut args = vec!["switch".into(), "--no-guess".into()];
+        if create {
+            args.push("-c".into());
+        }
+        args.push(name.to_owned());
+        self.spawn_git(args);
+        true
+    }
+
+    pub(crate) fn git_stash_create(&mut self, message: &str, include_untracked: bool) -> bool {
+        if self.vcs() != Some(VcsKind::Git)
+            || self.op_running()
+            || message.len() > 1024
+            || message.chars().count() > 256
+            || message.contains('\0')
+        {
+            return false;
+        }
+        let mut args = vec!["stash".into(), "push".into()];
+        if !message.trim().is_empty() {
+            args.push(format!("--message={message}"));
+        }
+        if include_untracked {
+            args.push("--include-untracked".into());
+        }
+        self.spawn_git(args);
+        true
+    }
+
+    pub(crate) fn git_stash_apply(&mut self, oid: &str, restore_index: bool) -> bool {
+        if self.vcs() != Some(VcsKind::Git)
+            || self.op_running()
+            || !matches!(oid.len(), 40 | 64)
+            || !oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return false;
+        }
+        // Full object identity remains stable when another window changes stash numbering.
+        let mut args = vec!["stash".into(), "apply".into()];
+        if restore_index {
+            args.push("--index".into());
+        }
+        args.push(oid.into());
+        self.spawn_git(args);
+        true
+    }
+
     /// `git restore -- <path>`：丢弃工作区改动（调用方负责确认交互；
     /// untracked 文件不适用——restore 不删新文件，按钮层不对 `?` 提供）。
     pub fn git_discard_path(&mut self, path: &str) {
@@ -490,9 +608,8 @@ impl SidePanel {
         self.vcs_commit_message(&msg);
     }
 
-    /// 直接以给定消息提交（GPUI 壳的输入组件走这里，不经旧壳的内部输入
-    /// 状态机）。按 VCS 分派：git 提交暂存区；svn 没有暂存区，提交整个
-    /// 工作副本的修改。
+    /// 直接提交给定消息：Git 提交暂存区，SVN 提交工作副本。
+    /// GPUI 的 Git 表单通过 git_commit_with_push 获取实际提交结果。
     pub fn vcs_commit_message(&mut self, message: &str) {
         let message = message.trim();
         if message.is_empty() || self.op_running() {
@@ -500,13 +617,36 @@ impl SidePanel {
         }
         match self.vcs() {
             Some(VcsKind::Git) => {
-                self.spawn_git(vec!["commit".into(), "-m".into(), message.to_owned()]);
+                self.spawn_git(git_commit_args(message));
             },
             Some(VcsKind::Svn) => {
                 self.spawn_svn_mutation(SvnMutation::Commit(message.to_owned()));
             },
             Some(VcsKind::SvnRepository) | None => {},
         }
+    }
+
+    /// GPUI keeps the draft until the commit command itself succeeds.
+    pub(crate) fn git_commit_with_push(
+        &mut self,
+        message: &str,
+        push_after: bool,
+    ) -> Option<std::sync::mpsc::Receiver<bool>> {
+        let message = message.trim();
+        let info = self.git.as_ref()?;
+        if message.is_empty()
+            || self.op_running()
+            || info.vcs != VcsKind::Git
+            || info.staged.is_empty()
+            || !info.conflicts.is_empty()
+        {
+            return None;
+        }
+        let mut steps = vec![git_commit_args(message)];
+        if push_after {
+            steps.push(vec!["push".into()]);
+        }
+        self.spawn_git_batch(steps)
     }
 
     /// Push button — only enabled with committed-but-unpushed work (`ahead`).
@@ -863,7 +1003,9 @@ pub(crate) fn run_git(
 /// 回 stdout（失败即 `None`）。
 pub(crate) fn collect_git_info(run: impl Fn(&[&str]) -> Option<String>) -> Option<GitInfo> {
     use crate::git_worktree::status::{STATUS_ARGS, parse_status};
-    let status = parse_status(&run(STATUS_ARGS)?).ok()?;
+    let mut args = STATUS_ARGS.to_vec();
+    args.push("--untracked-files=all");
+    let status = parse_status(&run(&args)?).ok()?;
     let mut info =
         GitInfo { branch: status.branch, ahead: status.ahead as _, ..GitInfo::default() };
     for entry in status.entries {

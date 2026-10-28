@@ -80,6 +80,16 @@ impl NebulaWorkspace {
     ) -> bool {
         self.theme_transition.clear(window);
         windowing::quick_terminal_bounds_changed(self.runtime_window_id, window, cx);
+        if self.pending_session_restore.is_some() {
+            let language = crate::gpui_shell::config::ui_language(cx);
+            crate::gpui_shell::toast::toast(
+                window,
+                cx,
+                crate::display::ToastKind::Info,
+                language.text(Message::SessionRestoreChecking),
+            );
+            return false;
+        }
         if self.window_close_pending {
             return false;
         }
@@ -244,20 +254,41 @@ pub(super) async fn confirm_incomplete_session(
     handle: gpui::AnyWindowHandle,
     cx: &mut gpui::AsyncApp,
 ) -> bool {
-    let prompt = handle.update(cx, |_, window, cx| {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let answer = std::rc::Rc::new(std::cell::RefCell::new(Some(send)));
+    let opened = handle.update(cx, move |_, window, cx| {
         use crate::i18n::Message;
         let language = crate::gpui_shell::config::ui_language(cx);
         window.activate_window();
-        window.prompt(
-            gpui::PromptLevel::Warning,
-            language.text(Message::SessionExitIncompleteTitle),
-            Some(language.text(Message::SessionExitIncompleteBody)),
-            &[language.text(Message::EditorCancel), language.text(Message::SessionExitAnyway)],
-            cx,
-        )
+        window.open_dialog(cx, move |dialog, window, _| {
+            let accepted = answer.clone();
+            let closed = answer.clone();
+            confirm_dialog(
+                dialog,
+                window,
+                language.text(Message::SessionExitIncompleteTitle),
+                language.text(Message::SessionExitIncompleteBody),
+                language.text(Message::SessionExitAnyway),
+                language.text(Message::EditorCancel),
+                ButtonVariant::Danger,
+            )
+            .on_ok(move |_, _, _| {
+                if let Some(send) = accepted.borrow_mut().take() {
+                    let _ = send.send(true);
+                }
+                true
+            })
+            .on_close(move |_, _, _| {
+                if let Some(send) = closed.borrow_mut().take() {
+                    let _ = send.send(false);
+                }
+            })
+        });
     });
-    let Ok(prompt) = prompt else { return false };
-    matches!(prompt.await, Ok(1))
+    if opened.is_err() {
+        return false;
+    }
+    receive.await.unwrap_or(false)
 }
 
 pub(super) async fn wait_for_session_ids(
@@ -272,7 +303,17 @@ pub(super) async fn wait_for_session_ids(
             return true;
         }
         if std::time::Instant::now() >= deadline {
-            return false;
+            // A persisted native chooser preserves the tool without selecting
+            // an unverified conversation. Other missing identities still warn.
+            return cx.update(|cx| {
+                panes.iter().all(|pane| {
+                    let view = pane.read(cx);
+                    !view.ai_session_save_pending()
+                        || view
+                            .session_agent()
+                            .is_some_and(|agent| agent.recovery_choice_command().is_some())
+                })
+            });
         }
         cx.background_executor().timer(Duration::from_millis(25)).await;
     }
@@ -283,26 +324,50 @@ mod tests {
     use super::*;
     use gpui::TestAppContext;
 
+    struct DialogBody;
+    impl Render for DialogBody {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().children(gpui_component::Root::render_dialog_layer(window, cx))
+        }
+    }
+
     #[gpui::test]
     async fn missing_identity_prompt_supports_cancel_and_explicit_close(cx: &mut TestAppContext) {
         cx.update(|cx| {
+            gpui_component::init(cx);
             cx.set_global(crate::gpui_shell::config::Settings::load(
                 nebula_settings::ThemeName::Nord,
             ));
         });
-        let handle = cx.add_empty_window().update(|window, _| window.window_handle());
+        let handle = cx
+            .add_window_view(|window, cx| {
+                let body = cx.new(|_| DialogBody);
+                gpui_component::Root::new(body, window, cx)
+            })
+            .1
+            .update(|window, _| window.window_handle());
         for (message, expected) in [
             (crate::i18n::Message::EditorCancel, false),
             (crate::i18n::Message::SessionExitAnyway, true),
         ] {
-            let answer = cx.update(|cx| crate::gpui_shell::config::ui_language(cx).text(message));
             let task =
                 cx.spawn(
                     move |mut cx| async move { confirm_incomplete_session(handle, &mut cx).await },
                 );
             cx.run_until_parked();
-            assert!(cx.has_pending_prompt());
-            cx.simulate_prompt_answer(answer);
+            let _ = message;
+            handle
+                .update(cx, |_, window, cx| {
+                    assert!(window.has_active_dialog(cx));
+                    let _ = window.draw(cx);
+                    let action: Box<dyn gpui::Action> = if expected {
+                        Box::new(gpui_component::dialog::ConfirmDialog)
+                    } else {
+                        Box::new(gpui_component::dialog::CancelDialog)
+                    };
+                    window.dispatch_action(action, cx);
+                })
+                .unwrap();
             assert_eq!(task.await, expected);
             assert_eq!(
                 cx.windows(),

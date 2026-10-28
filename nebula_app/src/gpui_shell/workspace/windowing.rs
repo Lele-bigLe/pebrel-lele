@@ -4,7 +4,13 @@
 //! `NebulaWorkspace`。所有外部启动和 runtime 命令先在这里选择窗口，再把
 //! 变更投递到对应 workspace，避免多个 receiver 竞争消费同一事件流。
 
+mod project_library;
 mod shutdown;
+pub(super) use project_library::publish_project_library;
+mod recipe;
+mod session_focus;
+pub(super) use recipe::open_recipe_window;
+pub(super) use session_focus::focus_open_agent;
 pub(crate) use shutdown::{quit_all, quit_for_update};
 mod startup;
 use startup::{initial_startup, runtime_window_startup};
@@ -123,6 +129,7 @@ struct WindowEntry {
     last_activated: u64,
     native_hwnd: isize,
     role: WindowRole,
+    recipe_source: Option<PathBuf>,
 }
 
 struct QuickTerminalWindow {
@@ -368,32 +375,6 @@ pub(crate) fn open_initial_window(
     .expect("failed to open Pebrel GPUI window");
 }
 
-pub(super) fn open_recipe_window(session: crate::session::Session, cx: &mut App) {
-    let result =
-        open_workspace_window(cx, WorkspaceStartup::Empty, None, None, true, WindowRole::Regular);
-    let Ok((id, _)) = result else {
-        log::warn!("recipe window creation failed");
-        return;
-    };
-    let entry = cx
-        .global::<WindowRegistry>()
-        .entries
-        .iter()
-        .find(|entry| entry.runtime_window_id == id)
-        .cloned();
-    let Some(entry) = entry else { return };
-    let _ = entry.handle.update(cx, |_, window, cx| {
-        let _ = entry.workspace.update(cx, |workspace, cx| {
-            for tab in &session.tabs {
-                workspace.restore_tab(tab, false, window, cx);
-            }
-            workspace.active = session.active_tab.min(workspace.tabs.len().saturating_sub(1));
-            workspace.focus_active(window, cx);
-            cx.notify();
-        });
-    });
-}
-
 fn workspace_window_options(
     cx: &mut App,
     focus: bool,
@@ -526,6 +507,11 @@ fn open_workspace_window(
             });
         }
         *workspace_out.borrow_mut() = Some(workspace.clone());
+        #[cfg(not(test))]
+        workspace.update(cx, |workspace, cx| {
+            workspace.load_project_library(cx);
+            workspace.start_usage_polling(cx);
+        });
         cx.new(|cx| Root::new(workspace, window, cx))
     })?;
     let workspace =
@@ -542,6 +528,7 @@ fn open_workspace_window(
         last_activated,
         native_hwnd,
         role,
+        recipe_source: None,
     });
     crate::gpui_shell::wallpaper::refresh(cx);
     if deferred_show {
@@ -1186,6 +1173,30 @@ pub(crate) fn notification_view(
     })
 }
 
+pub(super) fn other_chat_targets(
+    origin: u64,
+    cx: &mut App,
+) -> Vec<super::send_to_chat::SendToChatTarget> {
+    if !cx.has_global::<WindowRegistry>() {
+        return Vec::new();
+    }
+    entries_by_mru(cx)
+        .into_iter()
+        .filter(|entry| entry.runtime_window_id != origin)
+        .flat_map(|entry| {
+            let mut targets = entry
+                .workspace
+                .upgrade()
+                .map(|owner| owner.read(cx).send_to_chat_targets(cx))
+                .unwrap_or_default();
+            for target in &mut targets {
+                target.label_window(entry.runtime_window_id, cx);
+            }
+            targets
+        })
+        .collect()
+}
+
 pub(crate) fn focus_notification(pane_id: Option<u64>, cx: &mut App) {
     if !cx.has_global::<WindowRegistry>() {
         return;
@@ -1300,7 +1311,7 @@ fn focus_entry(entry: &WindowEntry, pane_id: Option<u64>, cx: &mut App) {
             if let Some(pane_id) = pane_id
                 && let Some(tab_ix) = workspace.tab_of_pane(pane_id)
             {
-                workspace.active = tab_ix;
+                workspace.activate_tab(tab_ix, window, cx);
                 if let Some(WorkspaceTab::Terminal { focused, zoomed, .. }) =
                     workspace.tabs.get_mut(tab_ix)
                 {
@@ -1649,7 +1660,9 @@ impl NebulaWorkspace {
         if !self.tabs.is_empty() {
             self.active = self.active.min(self.tabs.len() - 1);
         }
-        let source_became_empty = self.tabs.is_empty() && !self.settings_tab_open;
+        self.keep_active_in_project();
+        let source_became_empty =
+            self.tabs.is_empty() && !self.settings_tab_open && self.review.retained.is_empty();
         Some(DetachedTerminalTab {
             tab,
             meta,

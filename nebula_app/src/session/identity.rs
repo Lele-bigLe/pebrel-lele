@@ -77,7 +77,10 @@ mod tests {
                 session_id: Some("saved-thread".into()),
                 session_file: Some(path.into()),
             };
-            assert_eq!(saved.resume_command().as_deref(), Some("codex resume saved-thread"));
+            assert_eq!(
+                saved.resume_command().as_deref(),
+                Some("codex resume saved-thread --no-daemon")
+            );
         }
     }
 
@@ -93,7 +96,10 @@ mod tests {
         saved.normalize_identity();
         saved.normalize_identity();
         assert_eq!(saved, original, "normalization keeps the ID and native file intact");
-        assert_eq!(saved.resume_command().as_deref(), Some("codex resume saved-thread"));
+        assert_eq!(
+            saved.resume_command().as_deref(),
+            Some("codex resume saved-thread --no-daemon")
+        );
     }
 
     #[test]
@@ -121,10 +127,10 @@ mod tests {
                     "/home/user/.codex/sessions/rollout-date-{THREAD}.jsonl"
                 )),
             };
-            assert_eq!(saved.resume_command(), Some(format!("codex resume {THREAD}")));
+            assert_eq!(saved.resume_command(), Some(format!("codex resume {THREAD} --no-daemon")));
             saved.normalize_identity();
             assert_eq!(saved.session_id.as_deref(), Some(THREAD));
-            assert_eq!(saved.resume_command(), Some(format!("codex resume {THREAD}")));
+            assert_eq!(saved.resume_command(), Some(format!("codex resume {THREAD} --no-daemon")));
         }
     }
 }

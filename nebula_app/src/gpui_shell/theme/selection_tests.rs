@@ -18,7 +18,7 @@ fn apply_reader_theme(name: ThemeName, cx: &mut App) {
     apply_skin_tokens(&chrome, cx);
     // Match the product shell at full opacity without loading wallpaper,
     // preferences, or tray integrations into the isolated test process.
-    let background = super::shell_color(chrome.chrome_palette());
+    let background = super::shell_color(&chrome);
     let theme = Theme::global_mut(cx);
     theme.background = background;
     theme.tokens.background = background.into();

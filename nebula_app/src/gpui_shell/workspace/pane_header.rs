@@ -202,15 +202,20 @@ fn broadcast_mark(side: f32, color: Hsla) -> impl IntoElement {
 }
 
 /// 一个 pane 的标题信息：图标（AI 品牌图 / Nerd Font 字位）+ 一行标题。
-struct PaneTitle {
-    logo: Option<std::sync::Arc<gpui::RenderImage>>,
-    logo_pending: bool,
-    glyph: Option<&'static str>,
-    text: SharedString,
+pub(super) struct PaneTitle {
+    pub(super) logo: Option<std::sync::Arc<gpui::RenderImage>>,
+    pub(super) logo_pending: bool,
+    pub(super) glyph: Option<&'static str>,
+    pub(super) text: SharedString,
 }
 
 impl NebulaWorkspace {
-    fn pane_title(&self, view: &Entity<TerminalView>, cx: &App, dark: bool) -> PaneTitle {
+    pub(super) fn pane_title(
+        &self,
+        view: &Entity<TerminalView>,
+        cx: &App,
+        dark: bool,
+    ) -> PaneTitle {
         let view = view.read(cx);
         // 与 tab 标题同一套推导，只是作用在**这个** pane 上：跑着的程序最有
         // 信息量，其次是 SSH 目标，最后回落到 cwd 末级目录。
@@ -257,11 +262,11 @@ impl NebulaWorkspace {
         let ink = if focused { theme.foreground } else { muted };
         let accent = theme.primary;
         let editor_bg = theme.background;
-        // 聚焦 pane 的标题条比正文亮一档，失焦的贴回卡底——veil 只盖终端区，
-        // 标题条自己用色阶表达焦点（把标题也压暗 30% 会让四个 pane 的标题
-        // 全都糊成一片灰）。
-        let bar_bg =
-            if focused { theme.sidebar_accent.opacity(0.55) } else { theme.muted.opacity(0.28) };
+        let bar_bg = if focused {
+            theme.background.blend(theme.foreground.opacity(0.05))
+        } else {
+            theme.background
+        };
         let settings = cx.try_global::<crate::gpui_shell::config::Settings>();
         let chrome_family = theme.mono_font_family.clone();
         let symbol_family: SharedString = crate::font_install::REQUIRED_FONT_FAMILY.into();
@@ -702,8 +707,7 @@ impl NebulaWorkspace {
         if panes.len() < 2 {
             *broadcast = false;
         }
-        // 标签元数据不继承：`custom_name` / `color` 描述的是**那个 tab**，
-        // `shell_tag` 也可能记的是另一个 pane 的 shell。新 tab 从默认起。
+        // 保留项目归属；名字、色标与 shell 短标仍由新标签独立决定。
         let tab = WorkspaceTab::Terminal {
             tree: SplitTree::leaf(pane_id),
             panes: vec![pane],
@@ -712,7 +716,8 @@ impl NebulaWorkspace {
             broadcast: false,
         };
         let at = tab_ix + 1;
-        self.insert_tab_at(at, tab, super::TabMeta::default());
+        let project_root = self.meta(tab_ix).project_root;
+        self.insert_tab_at(at, tab, super::TabMeta { project_root, ..Default::default() });
         self.active = at;
         self.focus_active(window, cx);
         self.sync_side_panel_to_active(true, cx);

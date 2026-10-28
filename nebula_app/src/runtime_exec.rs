@@ -137,7 +137,7 @@ impl PaneExecContext {
     }
 }
 
-fn is_wsl_program(program: &str) -> bool {
+pub(crate) fn is_wsl_program(program: &str) -> bool {
     Path::new(program)
         .file_stem()
         .and_then(|stem| stem.to_str())

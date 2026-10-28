@@ -45,6 +45,7 @@ mod appearance_picker;
 mod background_color;
 mod background_shader;
 mod backup;
+mod codex_usage;
 mod cursor_motion;
 mod design;
 mod font_picker;
@@ -98,6 +99,8 @@ pub enum SettingsPaneEvent {
     /// 设置页"连接"按钮：宿主开 SSH tab（连接语义在业务层）。
     LaunchSsh(String),
     InstallAgent(crate::ai_agents::AgentKind),
+    CodexUsageChanged,
+    UsagePeriodChanged(crate::ai_usage::Period),
 }
 
 pub(super) type SharedSelect = Entity<SelectState<Vec<SharedString>>>;
@@ -113,6 +116,7 @@ pub struct SettingsPane {
     /// 当前分区（`SECTIONS` 下标）；默认落在应用主页。
     active_section: usize,
     agents: agents::AgentSettingsState,
+    codex_usage: codex_usage::State,
     mobile: mobile::MobileState,
     appearance_picker: Option<appearance_picker::AppearancePicker>,
     appearance_picker_seq: u64,
@@ -1249,7 +1253,12 @@ impl SettingsPane {
         let task = cx.background_executor().spawn(async { crate::update_check::check_now() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            let prompt = result.as_ref().ok().filter(|result| result.update_available).cloned();
+            let prompt = result
+                .as_ref()
+                .ok()
+                .and_then(Option::as_ref)
+                .filter(|result| result.update_available)
+                .cloned();
             let _ = this.update(cx, |pane, cx| {
                 if pane.about_update_seq != sequence {
                     return;
@@ -1257,10 +1266,11 @@ impl SettingsPane {
                 pane.about_last_checked =
                     Some(chrono::Local::now().format("%Y-%m-%d %H:%M").to_string());
                 pane.about_update = match result {
-                    Ok(result) if result.update_available => {
+                    Ok(Some(result)) if result.update_available => {
                         AboutUpdateState::Available(result.latest)
                     },
-                    Ok(result) => AboutUpdateState::UpToDate(result.latest),
+                    Ok(Some(result)) => AboutUpdateState::UpToDate(result.latest),
+                    Ok(None) => AboutUpdateState::NoPublishedRelease,
                     Err(error) => AboutUpdateState::Failed(error),
                 };
                 cx.notify();
@@ -1504,6 +1514,7 @@ impl SettingsPane {
             7 => self.section_keymap(cx),
             8 => self.section_advanced(cx),
             10 => self.section_agents(cx),
+            USAGE_SECTION => self.section_codex_usage(cx),
             MOBILE_SECTION => self.section_mobile(window, cx),
             _ => self.section_backup(window, cx),
         }
@@ -1748,7 +1759,7 @@ impl Render for SettingsPane {
                                     .child(
                                         v_flex()
                                             .w_full()
-                                            .when(matches!(self.active_section, 4 | 9 | 10 | MOBILE_SECTION), |content| {
+                                            .when(matches!(self.active_section, 4 | 9 | 10 | MOBILE_SECTION | USAGE_SECTION), |content| {
                                                 content.items_center()
                                             })
                                             .when(application_page, |content| content.max_w(px(960.0)))

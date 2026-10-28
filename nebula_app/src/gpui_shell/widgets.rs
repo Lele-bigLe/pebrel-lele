@@ -70,13 +70,14 @@ pub(crate) fn settings_button(button: Button, outlined: bool, cx: &App) -> Butto
         )
         .when(outlined, |button| button.border_1().border_color(cx.theme().border))
         .h(settings_control_height(cx))
+        .min_w(px(48.0))
         .px(px(12.0))
         .rounded(px(6.0))
 }
 
 /// Icon-only actions keep a square hit area without text-button side padding.
 pub(crate) fn settings_icon_button(button: Button, cx: &App) -> Button {
-    settings_button(button, false, cx).w(px(32.0)).h(px(32.0)).px_0()
+    settings_button(button, false, cx).min_w(px(32.0)).w(px(32.0)).h(px(32.0)).px_0()
 }
 
 /// The select keeps its native popup and keyboard handling; this frame supplies
@@ -103,6 +104,14 @@ pub(crate) fn settings_select_frame(
 /// Toolbar glyphs and their hover/hit surfaces have independent logical sizes.
 pub(crate) fn toolbar_button(id: impl Into<ElementId>, icon: impl Into<Icon>) -> Button {
     Button::new(id).icon(Icon::new(icon).size(px(18.0))).ghost().size(px(32.0))
+}
+
+/// The pinned component's vertical track is 8px with two 4px insets.
+pub(crate) const SCROLLBAR_GUTTER: f32 = 16.0;
+
+/// Pair with right padding on the relative scroll frame to keep row actions clear.
+pub(crate) fn scrollbar_gutter(scrollbar: gpui_component::scroll::Scrollbar) -> gpui::Div {
+    div().absolute().top_0().right_0().bottom_0().w(px(SCROLLBAR_GUTTER)).child(scrollbar)
 }
 
 #[cfg(all(test, feature = "gpui-test-support"))]

@@ -147,23 +147,13 @@ pub(crate) fn faint_ink(cx: &App) -> Hsla {
 /// 运行态圆环的轨道和旋转弧共用语义色；先与 Tab 行底色合成，
 /// 轨道与弧重叠时不会重复积累透明度，深浅主题都保持中性对比。
 pub(crate) fn sidebar_spinner_colors(cx: &App, active: bool) -> (GpuiRgba, GpuiRgba) {
-    let palette = resolved_palette(cx);
     let sk = resolved_skin(cx);
-    let shell = Rgba::new(palette.shell_bg.r, palette.shell_bg.g, palette.shell_bg.b, 255);
-    let base =
-        if active { crate::display::ui::surface::over(sk.accent_soft, shell) } else { shell };
-    let track = crate::display::ui::surface::over(sk.hairline, base);
-    let head = crate::display::ui::surface::over(
-        Rgba::new(sk.ink_dim.r, sk.ink_dim.g, sk.ink_dim.b, 255),
-        base,
-    );
-    let gpui = |color: Rgba| GpuiRgba {
-        r: f32::from(color.r) / 255.0,
-        g: f32::from(color.g) / 255.0,
-        b: f32::from(color.b) / 255.0,
-        a: 1.0,
-    };
-    (gpui(track), gpui(head))
+    let mut base = cx.theme().background;
+    base.a = 1.0;
+    if active {
+        base = base.blend(wash(sk.accent_soft));
+    }
+    (base.blend(wash(sk.hairline)).into(), ink(sk.ink_dim).into())
 }
 
 /// 保留 alpha 的水洗层（hover/surface/hairline 这类叠加色）。
@@ -211,17 +201,27 @@ fn wash_scaled(c: Rgba, f: f32) -> Hsla {
     .into()
 }
 
-/// 旧壳 `shell_frame_color` 的不透明形态：panel 按自身 alpha 预合成到
-/// shell_bg 上。整窗清到这个色；终端以 term_bg 圆角卡浮于其上，顶栏与
-/// 侧栏融进壳色（一体化外壳）。GPUI 壳暂不接透明度滑块，alpha 取 1。
-fn shell_color(p: crate::display::ui::theme::NebulaPalette) -> Hsla {
+/// Built-in chrome keeps a visible lightness step from the terminal canvas.
+/// Explicit custom chrome colors remain owned by the theme definition.
+fn shell_color(chrome: &ResolvedTheme) -> Hsla {
+    let p = chrome.chrome_palette();
     let pa = f32::from(p.panel.a) / 255.0;
     let comp = |pv: u8, bv: u8| (f32::from(pv) * pa + f32::from(bv) * (1.0 - pa)).round() as u8;
-    to_hsla(
+    let mut shell = to_hsla(
         comp(p.panel.r, p.shell_bg.r),
         comp(p.panel.g, p.shell_bg.g),
         comp(p.panel.b, p.shell_bg.b),
-    )
+    );
+    if !chrome.is_custom() {
+        let content = ink(p.term_bg);
+        let gap = if p.is_light { 0.06 } else { 0.09 };
+        shell.l = if p.is_light || content.l >= gap + 0.03 {
+            shell.l.min((content.l - gap).max(0.0))
+        } else {
+            shell.l.max((content.l + gap).min(1.0))
+        };
+    }
+    shell
 }
 
 /// 终端卡容器的几何。四个键一组：圆角、外间距、投影、竖线——「浮起的圆角卡」
@@ -585,7 +585,7 @@ fn apply_shell_opacity(chrome: &ResolvedTheme, cx: &mut App) {
     // the explicit runtime preference. Reading the resolved visual value here
     // keeps chrome, terminal cards and native window effects on one contract.
     let opacity = crate::gpui_shell::wallpaper::chrome_surface_opacity(cx);
-    let mut shell = shell_color(chrome.chrome_palette());
+    let mut shell = shell_color(chrome);
     shell.a *= opacity;
     let theme = Theme::global_mut(cx);
     theme.background = shell;

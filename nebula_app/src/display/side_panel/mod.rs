@@ -381,6 +381,8 @@ const SEARCH_SKIP_DIRS: &[&str] =
 pub struct SidePanel {
     pub open: bool,
     pub view: PanelView,
+    /// The project explorer consumes this file snapshot while Git stays open.
+    pub(crate) files_visible: bool,
     /// Git 抽屉内部当前页；切换文件/VCS 抽屉不会丢掉用户上次所在的页。
     pub git_view: GitPanelView,
     /// Root the tree/git snapshot was built from (the focused pane's cwd).
@@ -498,6 +500,7 @@ impl SidePanel {
         Self {
             open: false,
             view: PanelView::Files,
+            files_visible: false,
             git_view: GitPanelView::Changes,
             root: None,
             followed_cwd: None,
@@ -546,17 +549,19 @@ impl SidePanel {
     pub fn toggle(&mut self, view: PanelView) {
         if self.open && self.view == view {
             self.open = false;
-            self.file_index.clear_query();
-            self.rows = Vec::new();
-            self.search_memory = None;
-            self.selected = None;
-            self.drag_file = None;
+            if !self.files_visible {
+                self.file_index.clear_query();
+                self.rows = Vec::new();
+                self.search_memory = None;
+                self.selected = None;
+                self.drag_file = None;
+            }
             return;
         }
-        let resume_search = !self.open || self.view != PanelView::Files;
+        let resume_search = !self.files_active();
         self.open = true;
         self.view = view;
-        if view == PanelView::Git {
+        if view == PanelView::Git && !self.files_visible {
             self.file_index.clear_query();
             self.rows = Vec::new();
             self.search_memory = None;
@@ -593,7 +598,7 @@ impl SidePanel {
         cwd: Option<PathBuf>,
         wsl: Option<crate::shell_detect::WslCwd>,
     ) -> bool {
-        if !self.open {
+        if !self.open && !self.files_visible {
             return false;
         }
         // 先收割落地的后台快照——旧内容在工人跑动期间一直显示，这里一次
@@ -721,8 +726,7 @@ impl SidePanel {
 
     fn harvest_file_search(&mut self) -> bool {
         let Some(result) = self.file_index.take_result() else { return false };
-        if !self.open
-            || self.view != PanelView::Files
+        if !self.files_active()
             || result.epoch != self.search_index_epoch
             || self.search_index_root != self.current_index_root()
             || result.generation != self.search_generation
@@ -913,7 +917,9 @@ impl SidePanel {
         self.search_generation = self.search_generation.wrapping_add(1);
         self.search_error = None;
         self.search_total = 0;
-        let active_query = if self.search.trim().is_empty() || self.view != PanelView::Files {
+        let active_query = if self.search.trim().is_empty()
+            || (self.view != PanelView::Files && !self.files_visible)
+        {
             None
         } else {
             self.rows = Vec::new();
@@ -1371,10 +1377,39 @@ impl SidePanel {
         }
     }
 
+    pub(crate) fn files_active(&self) -> bool {
+        self.files_visible || (self.open && self.view == PanelView::Files)
+    }
+
+    pub(crate) fn set_files_visible(&mut self, visible: bool) -> bool {
+        if self.files_visible == visible {
+            return false;
+        }
+        let was_active = self.files_active();
+        self.files_visible = visible;
+        if self.files_active() && !was_active {
+            if self.search.trim().is_empty() {
+                self.rows.clone_from(&self.tree_rows);
+            } else {
+                self.file_index.query(
+                    self.search_index_epoch,
+                    self.search_generation,
+                    self.search.clone(),
+                    self.search_options,
+                );
+            }
+            self.needs_refresh = true;
+        } else if !self.files_active() {
+            self.file_index.clear_query();
+        }
+        true
+    }
+
     /// Click on visible row `index` (post-scroll). Directories toggle their
     /// expansion; files are inert (v1). Returns whether anything changed.
     pub fn click_row(&mut self, index: usize) -> bool {
-        if self.view != PanelView::Files || !self.search.trim().is_empty() {
+        if (self.view != PanelView::Files && !self.files_visible) || !self.search.trim().is_empty()
+        {
             return false;
         }
         let Some(row) = self.rows.get(self.scroll + index) else { return false };
@@ -1467,7 +1502,7 @@ impl SidePanel {
 
     /// The tree row currently shown at visible index `idx` (post-scroll).
     pub fn visible_row(&self, idx: usize) -> Option<&FileRow> {
-        if self.view != PanelView::Files {
+        if self.view != PanelView::Files && !self.files_visible {
             return None;
         }
         self.rows.get(self.scroll + idx)

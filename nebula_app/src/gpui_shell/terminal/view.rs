@@ -24,6 +24,7 @@ mod pointer;
 mod program_status;
 mod reading;
 mod runtime;
+pub(in crate::gpui_shell) mod shortcuts;
 mod startup;
 mod startup_command;
 #[cfg(all(test, feature = "gpui-test-support"))]
@@ -66,12 +67,10 @@ use crate::gpui_shell::prelude::{ActiveTheme as _, Colorize as _};
 use crate::{config::UiConfig, font_install::REQUIRED_FONT_FAMILY};
 use typography::mono_font;
 
-/// Overlay 滚动条的拇指宽度、最小高度与命中放宽量（逻辑 px；旧壳
-/// `scrollbar_geometry` 的 4/24/8 设备 px 在同一 DPI 语义下等值）。4px 的细条
-/// 不好抓，所以命中带比可见拇指左右各宽 `SLOP`。
-const SCROLLBAR_W: f32 = 4.0;
+/// Scrollbar dimensions in logical pixels; hit slop stays inside the reserved gutter.
+const SCROLLBAR_W: f32 = 8.0;
 const SCROLLBAR_MIN_THUMB: f32 = 24.0;
-const SCROLLBAR_SLOP: f32 = 8.0;
+const SCROLLBAR_SLOP: f32 = 4.0;
 
 /// 拖选越过网格上/下边界后的自动回滚：tick 间隔与「每远离 20px 加一行」的
 /// 速度分档取自旧壳 `SELECTION_SCROLLING_INTERVAL` / `SELECTION_SCROLLING_STEP`
@@ -1302,9 +1301,6 @@ impl TerminalView {
         self.dispatch_terminal_tab(true, window, cx);
     }
 
-    /// 终端 overlay 滚动条的拇指矩形——渲染与命中测试共用的唯一真值源（旧壳
-    /// `scrollbar_geometry` 同合同）。`None` = 不该出现：贴着底部时自动隐藏，
-    /// 没有回滚历史时也不画。
     fn marked_utf16_len(&self) -> usize {
         self.marked_text.as_deref().map(|t| t.encode_utf16().count()).unwrap_or(0)
     }
@@ -1461,10 +1457,11 @@ impl Render for TerminalView {
             // 壁纸"两层，这里再铺一层不透明 bg 会把它们全部盖死。圆角也
             // 只属于整个终端卡外壳；分屏 pane 自己带圆角会露出四个独立卡片。
             // 卡内呼吸边距，对齐旧壳网格 reserve 的换算值：上下 8（chrome
-            // 64/底 16 各减 8px 卡缝），左右 12（CONTENT_PAD_X 20 − 卡缝 8）。
+            // 64/底 16 各减 8px 卡缝），左右 12；右侧另留滚动条槽。
             // 网格因此不贴圆角；padding 区点击由 grid_point 的钳制兜底。
             .py(px(8.0))
-            .px(px(12.0))
+            .pl(px(12.0))
+            .pr(px(12.0 + crate::gpui_shell::widgets::SCROLLBAR_GUTTER))
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_terminal_tab))
             .on_action(cx.listener(Self::on_terminal_back_tab))
@@ -1515,7 +1512,7 @@ impl Render for TerminalView {
         if let Some(error) = &self.error {
             root = root.child(div().p_4().text_color(gpui::red()).child(error.clone()));
         } else {
-            root = root.child(TerminalElement::new(cx.entity()));
+            root = root.child(TerminalElement::new(cx.entity())).child(Self::render_scrollbar(cx));
             // SSH 连接卡片（旧壳 `display::ssh_connect` 的 GPUI 形态）：
             // 状态机/文案/常量直接复用，卡片遮罩盖住空 grid。350ms 显示
             // 门槛由 `visible()` 决定；动画帧驱动粒子与进度插值。

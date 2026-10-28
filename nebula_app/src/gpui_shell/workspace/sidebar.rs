@@ -181,10 +181,101 @@ impl NebulaWorkspace {
             .child(WAITING_INPUT_GLYPH)
     }
 
-    fn render_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn sidebar_activity_badge(
+        &self,
+        activity: SidebarActivity,
+        active: bool,
+        family: SharedString,
+        label_px: f32,
+        cx: &Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let theme = cx.theme();
+        Some(match activity {
+            SidebarActivity::Running => {
+                let (track, head) = crate::gpui_shell::theme::sidebar_spinner_colors(cx, active);
+                Self::spinner(self.spinner_phase, track, head, cx.weak_entity()).into_any_element()
+            },
+            SidebarActivity::Paused => {
+                Icon::new(IconName::Pause).xsmall().text_color(theme.warning).into_any_element()
+            },
+            SidebarActivity::Done => {
+                div().size(px(6.0)).rounded_full().bg(theme.primary).into_any_element()
+            },
+            SidebarActivity::Completed => {
+                Icon::new(IconName::Check).xsmall().text_color(theme.success).into_any_element()
+            },
+            SidebarActivity::CommandFailed => Icon::new(IconName::TriangleAlert)
+                .xsmall()
+                .text_color(theme.danger)
+                .into_any_element(),
+            SidebarActivity::Failed => {
+                Icon::new(IconName::CircleX).xsmall().text_color(theme.danger).into_any_element()
+            },
+            // Ordinary shell input and blocked agent approval share a shape, not severity.
+            SidebarActivity::WaitingInput | SidebarActivity::Attention => Self::waiting_hand(
+                family,
+                label_px,
+                if activity == SidebarActivity::Attention { theme.warning } else { theme.primary },
+            )
+            .into_any_element(),
+            SidebarActivity::Idle => return None,
+        })
+    }
+
+    pub(super) fn session_status_dot(
+        &self,
+        activity: SidebarActivity,
+        is_agent: bool,
+        id: SharedString,
+        cx: &Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if activity == SidebarActivity::Idle && !is_agent {
+            return None;
+        }
+        let theme = cx.theme();
+        let (color, message) = match activity {
+            SidebarActivity::Running => (theme.primary, Message::SessionStatusRunning),
+            SidebarActivity::Paused => (theme.muted_foreground, Message::SessionStatusPaused),
+            SidebarActivity::Done | SidebarActivity::Completed => {
+                (theme.success, Message::SessionStatusCompleted)
+            },
+            SidebarActivity::WaitingInput => (theme.warning, Message::SessionStatusWaitingInput),
+            SidebarActivity::Attention => (theme.warning, Message::SessionStatusAttention),
+            SidebarActivity::CommandFailed | SidebarActivity::Failed => {
+                (theme.danger, Message::SessionStatusFailed)
+            },
+            SidebarActivity::Idle => (theme.muted_foreground, Message::SessionStatusIdle),
+        };
+        let label = crate::gpui_shell::config::ui_language(cx).text(message);
+        Some(
+            div()
+                .id(id)
+                .role(gpui::Role::Status)
+                .aria_label(label)
+                .size(px(6.0))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(color)
+                .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+                .into_any_element(),
+        )
+    }
+
+    fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.workbench_changes(cx) {
+            return self.render_workbench_changes_sidebar(window, cx);
+        }
+        if matches!(self.projects.filter, super::projects::ProjectFilter::All)
+            && !self.project_entries().is_empty()
+        {
+            return self.render_projects_overview(cx);
+        }
+        let tree_mode = self.project_tree_mode(cx);
+        let language = crate::gpui_shell::config::ui_language(cx);
         let row_height = tab_scroll::tab_row_height(self.density);
         let row_pitch = self.tab_row_pitch();
-        let theme = cx.theme();
+        let project_switcher = self.render_project_switcher(cx).into_any_element();
+        let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
         // 数量 chip 数字：旧壳独用 ink_faint（比 ink_dim 再暗一档），chip 背
         // 景 surface 洗色不变——数字不该和标题抢层级。
@@ -210,18 +301,37 @@ impl NebulaWorkspace {
             .tab_drag
             .as_ref()
             .filter(|d| d.active && d.axis == TabDragAxis::Vertical)
-            .map(|d| (d.source, Self::drag_slot(d, self.tabs.len()), d.offset));
+            .map(|d| (d.source, self.tab_drag_target(d), d.offset));
 
         // 折叠只裁剪槽位，不改窗口算法：旧壳 `tabs_avail` 与 `tabs_open`
         // 分开——折起来时行矩形为零，但可用高度仍按面板剩余算。
         let (tabs_scroll, tabs_show) = self.tabs_visible_window();
         // 行的确定宽度：侧栏宽 − 侧栏 p_2 两边 − 列表右侧滚动条留白。
         // 与下面 `label_avail` 同一份减法口径，两者不能各算一套。
-        let row_w = (self.sidebar_width - 16.0 - tab_scroll::TAB_SCROLL_GUTTER).max(1.0);
-        let items = (0..self.tabs.len())
-            .filter(|&ix| tab_scroll::index_visible(ix, tabs_scroll, tabs_show))
-            .map(|ix| {
+        let row_w = (self.sidebar_width
+            - 16.0
+            - if tree_mode { 0.0 } else { tab_scroll::TAB_SCROLL_GUTTER })
+        .max(1.0);
+        let mut indices = self.sidebar_tab_indices();
+        if tree_mode {
+            indices.sort_by_key(|&index| !self.tabs[index].is_terminal());
+        }
+        let first_document = indices.iter().copied().find(|&index| !self.tabs[index].is_terminal());
+        let items = indices
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|&(position, ix)| {
+                if tree_mode {
+                    if self.tabs[ix].is_terminal() { true }
+                    else { !self.projects.documents_collapsed || Some(ix) == first_document }
+                } else { tab_scroll::index_visible(position, tabs_scroll, tabs_show) }
+            })
+            .map(|(_, ix)| {
+                let row_w = if tree_mode && !self.tabs[ix].is_terminal() { row_w - project_tree::TREE_INDENT } else { row_w };
                 let active = ix == self.active;
+                let session_row = tree_mode && self.tabs[ix].is_terminal();
+                let icon_width = if tree_mode { project_tree::TREE_SLOT } else { TAB_LABEL_ICON_W };
                 let TabPresentation {
                     title,
                     tooltip,
@@ -236,16 +346,30 @@ impl NebulaWorkspace {
                     pane_count,
                     local_administrator,
                 } = self.tab_presentation(ix, cx, dark);
+                let expanded_session = tree_mode && pane_count > 1
+                    && self.projects.expanded_sessions.contains(&self.meta(ix).runtime_id);
+                let tree_agent = tree_mode.then(|| self.tabs[ix].focused_view()
+                    .and_then(|view| view.read(cx).runtime_chat_agent())).flatten();
+                let tool = session_row.then(|| {
+                    tree_agent.as_ref().map_or("Shell", |agent| {
+                        if agent.kind == "claude" { "Claude" } else { &agent.display_name }
+                    }).to_owned()
+                });
+                let activity = if tree_mode {
+                    self.tabs[ix].focused_view().map(|view| view.read(cx).sidebar_activity()).unwrap_or(activity)
+                } else { activity };
+                let selected = active && !expanded_session;
+                let active_fg = if expanded_session && active { theme.foreground } else { active_fg };
                 let hover_group: SharedString = format!("sidebar-tab-hover-{ix}").into();
                 let has_program_glyph = program_glyph.is_some();
-                let status_width = Self::shell_status_width(
+                let status_width = if tree_mode { ((label_px * 1.18).max(15.0) * 1.25 + 10.0).max(32.0) } else { Self::shell_status_width(
                     window,
                     shell_tag.as_ref(),
                     &metadata_family,
                     label_px * SIDEBAR_TAG_SCALE,
                     TAB_STATUS_SLOT_W,
                     row_w * 0.45,
-                );
+                ) };
                 let cross_window_drag = self.cross_window_drag_payload(ix, cx);
                 // 用户明确设置过的标签色：行左侧一条竖光条（上下各留 7、宽 2.5，
                 // 与旧壳 strip 同源）。默认标签不占这层视觉层级。
@@ -261,60 +385,15 @@ impl NebulaWorkspace {
                     a: 1.0,
                 });
                 let status_color = if active { active_fg } else { muted };
-                let resting_status: Option<gpui::AnyElement> = match activity {
-                    SidebarActivity::Running => {
-                        let (track, head) =
-                            crate::gpui_shell::theme::sidebar_spinner_colors(cx, active);
-                        Some(Self::spinner(self.spinner_phase, track, head, cx.weak_entity()).into_any_element())
-                    },
-                    SidebarActivity::Paused => Some(
-                        Icon::new(IconName::Pause)
-                            .xsmall()
-                            .text_color(theme.warning)
-                            .into_any_element(),
-                    ),
-                    // 回合完成、等下一条指令：旧壳蓝点语义——不转圈，留一个
-                    // 「有结果没看」的痕迹。
-                    SidebarActivity::Done => Some(
-                        div().size(px(6.0)).rounded_full().bg(theme.primary).into_any_element(),
-                    ),
-                    // 刚完成：先闪一个对勾做确认，`COMPLETION_FLASH` 之后沉降
-                    // 成上面那个圆点（同一件事的两个阶段，不是两种语义）。
-                    SidebarActivity::Completed => Some(
-                        Icon::new(IconName::Check)
-                            .xsmall()
-                            .text_color(theme.success)
-                            .into_any_element(),
-                    ),
-                    // 上一条命令非 0 退出：⚠ 三角就是给失败的，形状本身在所有
-                    // 终端/编辑器里都这么读。pane 级故障用下面的 ✕，两者不同。
-                    SidebarActivity::CommandFailed => Some(
-                        Icon::new(IconName::TriangleAlert)
-                            .xsmall()
-                            .text_color(theme.danger)
-                            .into_any_element(),
-                    ),
-                    // 停在 [y/n]/口令/Press ENTER 上：也要你动手，但这是常态，
-                    // 用 Attention 的警示形状去喊会把真正要紧的那个喊废。
-                    SidebarActivity::WaitingInput => Some(
-                        Self::waiting_hand(symbol_family.clone(), label_px, theme.primary)
-                            .into_any_element(),
-                    ),
-                    // 停在授权/提问上：同样是「有人在等你」，所以跟
-                    // `WaitingInput` 用同一个手掌——形状表达语义。差别走颜色轴：
-                    // 它会把整个回合卡住，值得 warning。⚠ 三角留给失败，拿它表
-                    // 示「问你一句」会跟所有终端/编辑器的既有读法冲突。
-                    SidebarActivity::Attention => Some(
-                        Self::waiting_hand(symbol_family.clone(), label_px, theme.warning)
-                            .into_any_element(),
-                    ),
-                    SidebarActivity::Failed => Some(
-                        Icon::new(IconName::CircleX)
-                            .xsmall()
-                            .text_color(theme.danger)
-                            .into_any_element(),
-                    ),
-                    SidebarActivity::Idle => shell_tag.map(|tag| {
+                let resting_status = if session_row {
+                    Some(h_flex().gap_1().items_center().justify_end()
+                        .when(pane_count > 1, |row| row.child(pane_header::split_badge(pane_count, label_px, status_color, theme.muted)))
+                        .children(self.session_status_dot(activity, tree_agent.is_some(),
+                            format!("session-status-{}", self.meta(ix).runtime_id.0).into(), cx))
+                        .into_any_element())
+                } else { self.sidebar_activity_badge(
+                    activity, selected, symbol_family.clone(), label_px, cx,
+                ).or_else(|| shell_tag.map(|tag| {
                         Self::shell_status_label(
                             tag,
                             metadata_family.clone(),
@@ -322,8 +401,7 @@ impl NebulaWorkspace {
                             status_color,
                         )
                         .into_any_element()
-                    }),
-                };
+                    })) };
                 // 三类行位移（旧壳 tab_drag_draw_y 的语义）：被拖行骑指针，
                 // 源与落点之间的行向反方向让一个槽位，其余不动。存储顺序在
                 // 拖拽期间不变，释放时一次性提交。
@@ -359,7 +437,8 @@ impl NebulaWorkspace {
                 .overflow_hidden()
                 .gap_2()
                 .px_2()
-                .h(px(row_height))
+                .when(tree_mode, |row| row.gap(px(8.0)).px(px(10.0)).h(px(36.0)))
+                .h(px(if tree_mode { 36.0 } else { row_height }))
                 .items_center()
                 // 旧壳 pill 圆角 = UI_CORNER_RADIUS_LOGICAL(8)，rounded_md(6)
                 // 偏小一圈，选中水洗的轮廓形状会不一样。
@@ -368,9 +447,9 @@ impl NebulaWorkspace {
                 // tab chrome 使用终端 Regular face，所有子文本从这里继承常规字重。
                 .font_weight(FontWeight::NORMAL)
                 .cursor_pointer()
-                .when(active, |item| item.bg(active_bg).text_color(active_fg))
+                .when(active, |item| item.text_color(active_fg).when(!tree_mode, |row| row.bg(active_bg)))
                 .when(!active && !dragged, |item| {
-                    item.text_color(muted).hover(|style| style.bg(hover_bg))
+                    item.text_color(muted).when(!tree_mode, |row| row.hover(|style| style.bg(hover_bg)))
                 })
                 .when(!active && dragged, |item| item.text_color(muted).bg(hover_bg))
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -382,6 +461,7 @@ impl NebulaWorkspace {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        if this.project_tree_mode(cx) { return; }
                         this.tab_drag = Some(TabDrag {
                             source: ix,
                             cross_window: this.cross_window_drag_payload(ix, cx),
@@ -420,8 +500,8 @@ impl NebulaWorkspace {
                             .bg(color),
                     )
                 })
-                // 权限属于整个会话，先于程序身份呈现，且不被 AI 图标替换。
-                .when(local_administrator, |row| {
+                // 权限不被 AI 图标替换；树模式移到行尾，保留固定身份列。
+                .when(local_administrator && !tree_mode, |row| {
                     row.child(tab_presentation::administrator_badge(
                         format!("sidebar-admin-{ix}").into(),
                         cx,
@@ -433,27 +513,44 @@ impl NebulaWorkspace {
                 // 反过来（分屏就一律画 grid）会让 claude 分屏之后标签上再也
                 // 看不出跑着 claude——用户 08-23 报的「侧边 tab 不跟随激活
                 // tab 变化」就是这个。数量由尾部胶囊表达，不必和图标抢槽位。
+                .when(tree_mode && pane_count > 1, |row| {
+                    let id = self.meta(ix).runtime_id;
+                    row.child(Button::new(SharedString::from(format!("session-disclosure-{}", id.0)))
+                        .ghost().xsmall().w(px(icon_width)).h(px(28.0)).p_0().flex_shrink_0()
+                        .icon(if expanded_session { IconName::ChevronDown } else { IconName::ChevronRight })
+                        .aria_label(language.text(Message::SessionTreePanes))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.projects.expanded_sessions.retain(|id| this.tab_meta.iter().any(|meta| meta.runtime_id == *id));
+                            if !this.projects.expanded_sessions.remove(&id) {
+                                this.projects.expanded_sessions.insert(id.clone());
+                            }
+                            cx.notify();
+                        })))
+                })
                 .when(is_settings, |row| {
                     row.child(
-                        div().w(px(TAB_LABEL_ICON_W)).flex_shrink_0().flex().justify_center().child(
+                        div().w(px(icon_width)).flex_shrink_0().flex().justify_center().child(
                             Icon::new(IconName::Settings)
                                 .small()
                                 .text_color(if active { active_fg } else { muted }),
                         ),
                     )
                 })
-                .when_some(logo_image.clone(), |row, image| {
+                .when_some(logo_image.clone().filter(|_| !tree_mode || pane_count <= 1), |row, image| {
                     row.child(
-                        div().w(px(TAB_LABEL_ICON_W)).flex_shrink_0().flex().items_center().justify_center().child(
+                        div().w(px(icon_width)).flex_shrink_0().flex().items_center().justify_center().child(
                             img(image).size(px(TAB_LABEL_ICON_SIZE)).object_fit(ObjectFit::Contain),
                         ),
                     )
                 })
-                .when_some(program_glyph, |row, glyph| {
+                .when_some(program_glyph.filter(|_| !tree_mode || pane_count <= 1), |row, glyph| {
                     row.child(
                         div()
-                            .w(px(if logo_pending { TAB_LABEL_ICON_SIZE } else { TAB_LABEL_ICON_W }))
+                            .w(px(if tree_mode { icon_width } else if logo_pending { TAB_LABEL_ICON_SIZE } else { TAB_LABEL_ICON_W }))
                             .flex_shrink_0()
+                            .when(tree_mode, |slot| slot.flex().justify_center())
                             .font_family(symbol_family.clone())
                             .text_size(px(label_px))
                             .font_weight(FontWeight::NORMAL)
@@ -462,11 +559,11 @@ impl NebulaWorkspace {
                     )
                 })
                 .when(
-                    pane_count > 1 && !is_settings && logo_image.is_none() && !has_program_glyph,
+                    !tree_mode && pane_count > 1 && !is_settings && logo_image.is_none() && !has_program_glyph,
                     |row| {
                         row.child(
                             div()
-                                .w(px(TAB_LABEL_ICON_W))
+                                .w(px(icon_width))
                                 .flex_shrink_0()
                                 .flex()
                                 .items_center()
@@ -478,6 +575,9 @@ impl NebulaWorkspace {
                         )
                     },
                 )
+                .when(tree_mode && !is_settings && logo_image.is_none() && !has_program_glyph && pane_count <= 1, |row| {
+                    row.child(div().w(px(icon_width)).flex_shrink_0().child(Icon::new(IconName::SquareTerminal).small()))
+                })
                 // GPUI truncates the actual shaped title within its flex column.
                 .child(match renaming {
                     Some(input) => div()
@@ -510,7 +610,25 @@ impl NebulaWorkspace {
                         .child(title)
                         .into_any_element(),
                 })
-                .when(pane_count > 1, |row| {
+                .when(tree_mode && local_administrator, |row| {
+                    row.child(tab_presentation::administrator_badge(format!("sidebar-admin-{ix}").into(), cx))
+                })
+                .when_some(tool, |row, tool| {
+                    row.child(div().w(px(44.0)).h_full().flex_shrink_0().relative()
+                        .child(h_flex().absolute().inset_0().items_center()
+                            .when(tab_close_visible, |label| label.group_hover(hover_group.clone(), |style| style.invisible()))
+                            .child(div().truncate().text_xs().text_color(theme.muted_foreground).child(tool)))
+                        .when(tab_close_visible, |slot| slot.child(
+                            h_flex().absolute().inset_0().items_center().justify_end()
+                                .invisible().group_hover(hover_group.clone(), |style| style.visible())
+                                .child(Button::new(("close-tab", ix)).ghost().xsmall().icon(IconName::Close)
+                                    .aria_label(language.text(Message::CommonClose))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.request_close_tab(ix, window, cx);
+                                    }))))))
+                })
+                .when(pane_count > 1 && !tree_mode, |row| {
                     row.child(
                         div()
                             .id(("sidebar-pane-count", ix))
@@ -524,7 +642,7 @@ impl NebulaWorkspace {
                                 pane_count,
                                 label_px,
                                 if active { active_fg } else { muted },
-                                if active { active_bg } else { theme.muted },
+                                if selected { active_bg } else { theme.muted },
                             )),
                     )
                 })
@@ -537,11 +655,11 @@ impl NebulaWorkspace {
                                     .inset_0()
                                     .justify_end()
                                     .items_center()
-                                    .group_hover(hover_group.clone(), |item| item.invisible())
+                                    .when(!session_row, |item| item.group_hover(hover_group.clone(), |item| item.invisible()))
                                     .child(status),
                             )
                         })
-                        .child(
+                        .when(!session_row, |slot| slot.child(
                             // 关闭按钮跟状态徽章共用同一个居中槽位：位置由
                             // flex 给出，不再硬写 top 偏移。
                             h_flex()
@@ -565,7 +683,7 @@ impl NebulaWorkspace {
                                                 )),
                                         )
                                     }),
-                        ),
+                        )),
                 )
                 // 右键只记锚点：菜单由 workspace 根上唯一一份宿主画。挂
                 // `.context_menu()` 会让每个标签行都渲染同一个 PopupMenu，
@@ -582,7 +700,7 @@ impl NebulaWorkspace {
                         NebulaWorkspace::cross_window_drag_preview(payload, cx)
                     })
                 });
-                if dragged {
+                let row = if dragged {
                     // 骑指针 + 提到最上层画（deferred 只延后绘制、不动布局），
                     // 阴影给"拿起来"的抬升感。
                     gpui::deferred(
@@ -606,13 +724,19 @@ impl NebulaWorkspace {
                     }
                 } else {
                     row.into_any_element()
-                }
+                };
+                if tree_mode { self.render_project_tab_branch(ix, row, Some(ix) == first_document, label_px, cx) } else { row }
             })
             .collect::<Vec<_>>();
 
         let header_group: SharedString = "sidebar-tabs-header-hover".into();
-        let count: SharedString = self.tabs.len().to_string().into();
+        let count: SharedString = indices.len().to_string().into();
+        let language = crate::gpui_shell::config::ui_language(cx);
 
+        if tree_mode {
+            return self.render_project_session_sidebar(project_switcher, items, cx);
+        }
+        let tabs = self.render_tabs_section(items, cx);
         let sidebar = v_flex()
             .w(px(self.sidebar_width))
             .h_full()
@@ -630,6 +754,7 @@ impl NebulaWorkspace {
             .on_mouse_move(cx.listener(|this, event, window, cx| {
                 this.update_tab_drag(event, window, cx);
             }))
+            .child(project_switcher)
             .child(
                 h_flex()
                     .id("sidebar-tabs-toggle")
@@ -681,7 +806,7 @@ impl NebulaWorkspace {
                                     .text_size(px(label_px * SIDEBAR_TITLE_SCALE))
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(muted)
-                                    .child("TABS"),
+                                    .child(language.text(Message::ProjectSessions)),
                             )
                             .child(
                                 // chip 尺寸贴旧壳公式：h = max(cell_h×0.82×1.18, 11)
@@ -758,8 +883,12 @@ impl NebulaWorkspace {
                             ),
                     ),
             )
-            .child(self.render_tabs_section(items, cx));
-        sidebar
+            .child(tabs)
+            .child(
+                v_flex().w_full().flex_shrink_0().mt_auto().pt_1()
+                    .child(self.render_usage_button(cx)),
+            );
+        sidebar.into_any_element()
     }
 
     /// 与旧壳 `nebula_tabs_section_open` 同义：点标题整行折叠/展开。
@@ -827,7 +956,7 @@ impl NebulaWorkspace {
     /// 终端卡随 flex 布局自然滑移收编空间（对齐旧壳"卡骑在折叠动画上"
     /// 的观感）。动画按方向换 key 重启，端点随运行时设置变化。
     pub(super) fn render_sidebar_slot(
-        &self,
+        &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {

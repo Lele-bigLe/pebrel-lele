@@ -929,6 +929,7 @@ mod boot_breaker_tests {
         };
         let tab = TabSession {
             cwd: String::new(),
+            project_root: None,
             custom_name: None,
             color: None,
             launch: Some(launch.clone()),

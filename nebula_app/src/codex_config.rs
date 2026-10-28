@@ -39,7 +39,7 @@ pub fn apply_provider(provider: &AiProvider) -> Result<PathBuf, String> {
     Ok(home)
 }
 
-fn codex_home() -> Option<PathBuf> {
+pub(crate) fn codex_home() -> Option<PathBuf> {
     std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .or_else(|| crate::platform::dirs::home_dir().map(|home| home.join(".codex")))

@@ -102,6 +102,7 @@ fn duplicate_rebuilds_nested_mixed_layout_with_fresh_sessions(cx: &mut TestAppCo
     };
     let original = TabSession {
         cwd: cwd.clone(),
+        project_root: None,
         custom_name: Some("Mixed workspace".into()),
         color: Some(crate::display::color::Rgb::new(12, 34, 56)),
         launch: Some(launches[0].clone()),

@@ -11,6 +11,25 @@ use super::*;
 const DIRECTORY_LIMIT: usize = 128;
 const AI_SESSION_LIMIT: usize = 30;
 
+impl NebulaWorkspace {
+    pub(super) fn open_quick_jump_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_palette_state();
+        self.command_manager_open = false;
+        self.shell_picker_open = false;
+        self.launcher_filter = crate::display::command_palette::LauncherFilter::All;
+        self.quick_jump_filter = Some(QuickJumpFilter::All);
+        self.palette_override = Some(rows(self, cx));
+        self.command_palette_open = true;
+        self.command_palette_selected = 0;
+        self.reset_palette_query(
+            QuickJumpFilter::All.placeholder(workspace_ui_language()),
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+}
+
 pub(super) fn rows(workspace: &NebulaWorkspace, cx: &App) -> Vec<WorkspacePaletteRow> {
     let language = workspace_ui_language();
     let mut rows = tab_rows(workspace, cx, language);

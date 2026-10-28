@@ -276,7 +276,7 @@ impl NebulaWorkspace {
             return;
         }
         let view = cx.new(|cx| crate::gpui_shell::code_tab::CodeTabView::new(path, window, cx));
-        let subscription = cx.subscribe(&view, Self::on_code_tab_event);
+        let subscription = cx.subscribe_in(&view, window, Self::on_code_tab_event);
         self.insert_new_tab(WorkspaceTab::Code { view, _subscription: subscription });
         self.focus_active(window, cx);
         cx.notify();
@@ -309,7 +309,46 @@ impl NebulaWorkspace {
                 cx,
             )
         });
-        let subscription = cx.subscribe(&view, Self::on_code_tab_event);
+        let subscription = cx.subscribe_in(&view, window, Self::on_code_tab_event);
+        self.insert_new_tab(WorkspaceTab::Code { view, _subscription: subscription });
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn open_git_diff_tab(
+        &mut self,
+        relative_path: String,
+        staged: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(location) = self.side_panel.git_location() else { return };
+        if let Some(index) = self.tabs.iter().position(|tab| matches!(tab,
+            WorkspaceTab::Code { view, .. } if view.read(cx).matches_git_diff(&location, &relative_path, staged)))
+        {
+            if let Some(WorkspaceTab::Code { view, .. }) = self.tabs.get(index) {
+                view.update(cx, |view, cx| view.reload_git_diff(window, cx));
+            }
+            self.activate_tab(index, window, cx);
+            return;
+        }
+        let Some(root) = self.side_panel.vcs_root() else { return };
+        let path = root.join(&relative_path);
+        let view = cx.new(|cx| {
+            crate::gpui_shell::code_tab::CodeTabView::new_git_diff(
+                location,
+                relative_path,
+                staged,
+                path,
+                window,
+                cx,
+            )
+        });
+        if self.insert_workbench_preview(view.clone(), window, cx) {
+            return;
+        }
+        let subscription = cx.subscribe_in(&view, window, Self::on_code_tab_event);
+        self.restore_retained_review(&view, window, cx);
         self.insert_new_tab(WorkspaceTab::Code { view, _subscription: subscription });
         self.focus_active(window, cx);
         cx.notify();
@@ -422,15 +461,17 @@ impl NebulaWorkspace {
         true
     }
 
-    fn on_code_tab_event(
+    pub(super) fn on_code_tab_event(
         &mut self,
-        _: Entity<crate::gpui_shell::code_tab::CodeTabView>,
+        view: &Entity<crate::gpui_shell::code_tab::CodeTabView>,
         event: &CodeTabViewEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             CodeTabViewEvent::Changed => cx.notify(),
-            CodeTabViewEvent::GitConflictResolved => {
+            CodeTabViewEvent::ReviewRequested => self.open_review_queue(view, window, cx),
+            CodeTabViewEvent::GitConflictResolved | CodeTabViewEvent::GitStateInvalidated => {
                 self.side_panel.request_refresh();
                 cx.notify();
             },

@@ -106,7 +106,9 @@ impl NebulaWorkspace {
         let language = crate::gpui_shell::config::ui_language(cx);
         let ai_fork = tab_ai_fork_enabled(self, ix, cx);
         let color = self.meta(ix).color;
-        let tab_count = self.tabs.len();
+        let indices = self.sidebar_tab_indices();
+        let visible_position = indices.iter().position(|&index| index == ix).unwrap_or(0);
+        let move_enabled = (visible_position > 0, visible_position + 1 < indices.len());
         let retry =
             self.tabs[ix].focused_view().filter(|view| view.read(cx).can_retry_recovery()).cloned();
         let choose_session = self.tabs[ix]
@@ -115,6 +117,7 @@ impl NebulaWorkspace {
             .cloned();
         let copy_cwd =
             self.tabs[ix].focused_view().map(|view| copy_working_directory_item(view, cx));
+        let project_item = self.project_assignment_item(ix, window, cx);
         let workspace = cx.entity().downgrade();
         let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
             if let Some(view) = choose_session {
@@ -136,6 +139,7 @@ impl NebulaWorkspace {
             if let Some(copy_cwd) = copy_cwd {
                 menu = menu.item(copy_cwd).separator();
             }
+            menu = menu.item(project_item).separator();
             Self::tab_popup_menu(
                 menu.external_link_icon(false),
                 workspace,
@@ -143,7 +147,7 @@ impl NebulaWorkspace {
                 terminal,
                 ai_fork,
                 color,
-                tab_count,
+                move_enabled,
                 language,
             )
         });
@@ -183,7 +187,7 @@ impl NebulaWorkspace {
         terminal: bool,
         ai_fork: bool,
         color: Option<Rgb>,
-        tab_count: usize,
+        move_enabled: (bool, bool),
         language: UiLanguage,
     ) -> PopupMenu {
         if ai_fork {
@@ -289,7 +293,7 @@ impl NebulaWorkspace {
                 PopupMenuItem::new(language.text(Message::TabMenuMoveLeft))
                     .icon(IconName::ArrowLeft)
                     .action(Box::new(MoveTabLeft))
-                    .disabled(ix == 0)
+                    .disabled(!move_enabled.0)
                     .on_click(move |_, window, cx| {
                         if let Some(workspace) = move_left.upgrade() {
                             workspace.update(cx, |workspace, cx| {
@@ -303,7 +307,7 @@ impl NebulaWorkspace {
                 PopupMenuItem::new(language.text(Message::TabMenuMoveRight))
                     .icon(IconName::ArrowRight)
                     .action(Box::new(MoveTabRight))
-                    .disabled(ix + 1 >= tab_count)
+                    .disabled(!move_enabled.1)
                     .on_click(move |_, window, cx| {
                         if let Some(workspace) = move_right.upgrade() {
                             workspace.update(cx, |workspace, cx| {

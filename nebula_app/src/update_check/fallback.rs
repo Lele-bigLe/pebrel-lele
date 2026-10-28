@@ -9,36 +9,41 @@ use ureq::ResponseExt as _;
 use super::LatestRelease;
 use crate::i18n::{LanguagePreference, Message};
 
-const LATEST_PAGE: &str = "https://github.com/Kuddev/pebrel/releases/latest";
-const TAG_PREFIX: &str = "https://github.com/Kuddev/pebrel/releases/tag/";
+const LATEST_PAGE: &str = "https://github.com/Lele-bigLe/pebrel-lele/releases/latest";
+const TAG_PREFIX: &str = "https://github.com/Lele-bigLe/pebrel-lele/releases/tag/";
 
-pub(super) fn fetch_latest(status: u16) -> Result<LatestRelease, String> {
+pub(super) fn fetch_latest(status: u16) -> Result<Option<LatestRelease>, String> {
     log::info!("update-check: API returned HTTP {status}; checking official latest-release page");
     // Resolve proxy settings for github.com independently of api.github.com.
     let agent = crate::update_proxy::agent(LATEST_PAGE, Duration::from_secs(10));
     let language =
         LanguagePreference::from(nebula_settings::RuntimeSettings::load().language).resolved();
-    let uri = redirected_uri(&agent, LATEST_PAGE).map_err(|error| {
+    let uri = match redirected_uri(&agent, LATEST_PAGE) {
+        Err(ureq::Error::StatusCode(404)) => return Ok(None),
+        result => result,
+    }
+    .map_err(|error| {
         language.format(
             Message::UpdateCheckFallbackFailed,
             &[("status", &status.to_string()), ("error", &error.to_string())],
         )
     })?;
+    // With no published release, GitHub redirects /latest to the channel's release list.
+    if uri.trim_end_matches('/') == super::RELEASES_PAGE {
+        return Ok(None);
+    }
     let mut release = release_from_uri(&uri)
         .ok_or_else(|| language.text(Message::UpdateCheckUnrecognizedRelease).to_owned())?;
     // The official manifest restores verified download metadata during API limits.
     // If it is unavailable, version discovery still works with manual download.
-    let url = format!(
-        "https://github.com/Kuddev/pebrel/releases/download/v{}/SHA256SUMS",
-        release.version
-    );
+    let url = format!("{}v{}/SHA256SUMS", super::RELEASE_DOWNLOAD_PREFIX, release.version);
     let agent = crate::update_proxy::agent(&url, Duration::from_secs(10));
     if let Ok(mut response) = agent.get(&url).header("User-Agent", "pebrel").call()
         && let Ok(text) = response.body_mut().with_config().limit(64 * 1024).read_to_string()
     {
         release.asset = super::assets::from_checksums(&release.version, &text);
     }
-    Ok(release)
+    Ok(Some(release))
 }
 
 fn redirected_uri(agent: &ureq::Agent, url: &str) -> Result<String, ureq::Error> {
@@ -88,9 +93,10 @@ mod tests {
                 "http://api.update.invalid/latest",
                 |code| {
                     assert!(matches!(code, 403 | 429));
-                    Ok(release_from_uri(&format!("{TAG_PREFIX}v1.9.0")).unwrap())
+                    Ok(release_from_uri(&format!("{TAG_PREFIX}v1.9.0")))
                 },
             )
+            .unwrap()
             .unwrap();
             assert!(super::super::is_newer(&result.version, "1.8.2"));
             assert!(!super::super::is_newer(&result.version, "1.9.0"));
@@ -104,7 +110,7 @@ mod tests {
         for (status, body, succeeds) in [
             ("200 OK", r#"{"tag_name":"v1.9.0","assets":[]}"#, true),
             ("200 OK", "not JSON", false),
-            ("404 Not Found", "missing release", false),
+            ("404 Not Found", "missing release", true),
             ("500 Internal Server Error", "server error", false),
         ] {
             let server = Server::start(vec![response(status, "", body)]);
@@ -133,14 +139,16 @@ mod tests {
     #[test]
     fn redirect_transport_uses_the_final_location_without_parsing_html() {
         // The local CONNECT fixture uses HTTP; production agent requires HTTPS.
-        let destination = "http://github.com/Kuddev/pebrel/releases/tag/v1.9.0";
+        let destination = "http://github.com/Lele-bigLe/pebrel-lele/releases/tag/v1.9.0";
         let server = Server::start(vec![
             response("302 Found", &format!("Location: {destination}\r\n"), ""),
             response("200 OK", "Content-Type: text/html\r\n", "<html>no metadata</html>"),
         ]);
-        let uri =
-            redirected_uri(&server.agent(&[]), "http://github.com/Kuddev/pebrel/releases/latest")
-                .unwrap();
+        let uri = redirected_uri(
+            &server.agent(&[]),
+            "http://github.com/Lele-bigLe/pebrel-lele/releases/latest",
+        )
+        .unwrap();
         assert_eq!(uri, destination);
         let requests = server.finish();
         assert_eq!(requests.len(), 2);
@@ -157,16 +165,16 @@ mod tests {
             LATEST_PAGE,
             "https://github.com/login",
             "https://github.com/Other/pebrel/releases/tag/v99.0.0",
-            "http://github.com/Kuddev/pebrel/releases/tag/v1.9.0",
-            "https://github.com.evil.invalid/Kuddev/pebrel/releases/tag/v1.9.0",
-            "https://github.com/Kuddev/pebrel/releases/tag/v1.9.0?foo=bar",
-            "https://github.com/Kuddev/pebrel/releases/tag/v1.9.0#fragment",
-            "https://github.com/Kuddev/pebrel/releases/tag/v1.9.0/extra",
-            "https://github.com/Kuddev/pebrel/releases/tag/v1.9.0-rc1",
-            "https://github.com/Kuddev/pebrel/releases/tag/relay-abcd",
-            "https://github.com/Kuddev/pebrel/releases/tag/v1..0",
-            "https://github.com/Kuddev/pebrel/releases/tag/v01.9.0",
-            "https://github.com/Kuddev/pebrel/releases/tag/v18446744073709551616.0.0",
+            "http://github.com/Lele-bigLe/pebrel-lele/releases/tag/v1.9.0",
+            "https://github.com.evil.invalid/Lele-bigLe/pebrel-lele/releases/tag/v1.9.0",
+            "https://github.com/Lele-bigLe/pebrel-lele/releases/tag/v1.9.0?foo=bar",
+            "https://github.com/Lele-bigLe/pebrel-lele/releases/tag/v1.9.0#fragment",
+            "https://github.com/Lele-bigLe/pebrel-lele/releases/tag/v1.9.0/extra",
+            "https://github.com/Lele-bigLe/pebrel-lele/releases/tag/v1.9.0-rc1",
+            "https://github.com/Lele-bigLe/pebrel-lele/releases/tag/relay-abcd",
+            "https://github.com/Lele-bigLe/pebrel-lele/releases/tag/v1..0",
+            "https://github.com/Lele-bigLe/pebrel-lele/releases/tag/v01.9.0",
+            "https://github.com/Lele-bigLe/pebrel-lele/releases/tag/v18446744073709551616.0.0",
         ] {
             assert!(release_from_uri(uri).is_none(), "{uri}");
         }
@@ -177,10 +185,14 @@ mod tests {
     fn live_update_check_survives_api_rate_limiting() {
         let release = super::super::check_now().expect("live public update check");
         println!(
-            "current={} latest={} update_available={}",
-            release.current, release.latest, release.update_available
+            "published_release={:?}",
+            release.as_ref().map(|release| (
+                &release.current,
+                &release.latest,
+                release.update_available
+            ))
         );
         let fallback = fetch_latest(403).expect("live official release fallback");
-        assert_eq!(release.latest, fallback.version);
+        assert_eq!(release.map(|release| release.latest), fallback.map(|release| release.version));
     }
 }

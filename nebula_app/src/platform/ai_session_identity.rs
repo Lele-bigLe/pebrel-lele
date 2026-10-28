@@ -12,6 +12,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+pub(crate) mod recovery;
+
 #[cfg(any(target_os = "macos", test))]
 mod macos;
 #[cfg(windows)]
@@ -100,26 +102,28 @@ pub(crate) fn probe_codex_session(
     exec_context: Option<&crate::runtime_exec::PaneExecContext>,
     shell_pid: Option<u32>,
 ) -> Option<CodexSession> {
-    let pane_id = pane_id.to_string();
-    let context = exec_context?;
-    let instance = context.process_instance()?;
-    if let Some(distro) = context.wsl_distribution() {
-        return probe_wsl(distro, context.wsl_user(), &pane_id, instance);
+    if let Some(context) = exec_context
+        && let Some(distro) = context.wsl_distribution()
+    {
+        return probe_wsl(
+            distro,
+            context.wsl_user(),
+            &pane_id.to_string(),
+            context.process_instance()?,
+        );
     }
 
     #[cfg(target_os = "linux")]
     {
         let _ = shell_pid;
-        return probe_local_proc(&pane_id, instance);
+        return probe_local_proc(&pane_id.to_string(), exec_context?.process_instance()?);
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = (pane_id, instance);
         return macos::probe(shell_pid?);
     }
     #[cfg(windows)]
     {
-        let _ = (pane_id, instance);
         windows::probe(shell_pid?)
     }
 }

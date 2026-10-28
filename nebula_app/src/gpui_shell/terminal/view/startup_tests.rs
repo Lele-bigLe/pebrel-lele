@@ -980,7 +980,7 @@ fn cold_resume_normalizes_codex_identity_before_waiting_for_native_confirmation(
         );
         let target = view.session_agent().unwrap();
         assert_eq!(target.session_id.as_deref(), Some(thread));
-        assert_eq!(target.resume_command(), Some(format!("codex resume {thread}")));
+        assert_eq!(target.resume_command(), Some(format!("codex resume {thread} --no-daemon")));
         let event = crate::ai_hook::parse_remote_envelope(
             format!(
                 "nebula-hook/1 source=codex codex_hooks=full\n{}",
@@ -1005,7 +1005,7 @@ fn cold_resume_of_supported_clis_waits_for_the_shell_and_preserves_each_target(
 ) {
     for (source, expected) in [
         ("claude", "claude --resume saved-conversation"),
-        ("codex", "codex resume saved-conversation"),
+        ("codex", "codex resume saved-conversation --no-daemon"),
         ("gemini", "gemini --resume saved-conversation"),
         ("opencode", "opencode --session saved-conversation"),
         ("amp", "amp threads continue saved-conversation"),
@@ -1088,7 +1088,7 @@ fn cold_resume_preserves_codex_id_with_a_legacy_native_file(cx: &mut TestAppCont
         feed(view, b"\x1b]133;A\x07user@host:~$ ");
         view.flush_pending_shell_command(cx);
         assert!(receiver.try_iter().any(|message| {
-            matches!(message, Msg::Input(bytes) if bytes.as_ref() == b"codex resume saved-thread")
+            matches!(message, Msg::Input(bytes) if bytes.as_ref() == b"codex resume saved-thread --no-daemon")
         }));
         assert_eq!(view.session_agent(), Some(saved));
         assert!(view.recovery_pending(), "submission still waits for provider confirmation");
@@ -1130,7 +1130,7 @@ fn missing_codex_target_opens_the_native_chooser_and_confirms_the_users_choice(
         feed(view, b"\x1b]133;A\x07user@host:~$ ");
         view.process_event(Event::Wakeup, cx);
         assert!(receiver.try_iter().any(|message| {
-            matches!(message, Msg::Input(bytes) if bytes.as_ref() == b"codex resume")
+            matches!(message, Msg::Input(bytes) if bytes.as_ref() == b"codex resume --no-daemon")
         }));
         assert!(view.recovery_pending(), "opening a chooser is not a recovered conversation");
         let selected = crate::session::AgentSession {
@@ -1259,7 +1259,7 @@ fn a_failed_codex_chooser_does_not_start_an_automatic_retry_loop(cx: &mut TestAp
         view.process_event(Event::CommandDone { exit_code: Some(1) }, cx);
         feed(view, b"\x1b]133;A\x07user@host:~$ ");
         view.flush_pending_shell_command(cx);
-        feed(view, b"codex resume");
+        feed(view, b"codex resume --no-daemon");
         view.flush_pending_runtime_submit(cx);
         view.process_event(Event::CommandStart, cx);
         receiver.try_iter().for_each(drop);

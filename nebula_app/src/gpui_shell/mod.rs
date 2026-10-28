@@ -24,6 +24,7 @@ macro_rules! eprintln {
 
 mod assets;
 pub mod code_tab;
+mod codex_quota;
 pub mod config;
 pub(crate) mod copy_feedback;
 pub mod doc_tabs;
@@ -47,6 +48,8 @@ pub mod terminal;
 pub mod theme;
 pub mod toast;
 mod typography;
+mod usage_format;
+mod usage_view;
 pub mod wallpaper;
 pub mod widgets;
 pub mod workspace;

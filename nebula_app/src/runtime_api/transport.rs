@@ -562,7 +562,9 @@ pub(super) fn write_json_line<T: Serialize>(
     stream: &mut TcpStream,
     value: &T,
 ) -> Result<(), IoError> {
-    serde_json::to_writer(&mut *stream, value).map_err(IoError::other)?;
-    stream.write_all(b"\n")?;
+    // Avoid a socket write for every JSON fragment in a mobile screen response.
+    let mut bytes = serde_json::to_vec(value).map_err(IoError::other)?;
+    bytes.push(b'\n');
+    stream.write_all(&bytes)?;
     stream.flush()
 }

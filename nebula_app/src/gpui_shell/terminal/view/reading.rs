@@ -63,6 +63,7 @@ impl TerminalView {
                 notice: None,
                 commands: Vec::new(),
                 commands_open: commands,
+                failed_only: false,
                 highlight: None,
             });
         }
@@ -77,6 +78,20 @@ impl TerminalView {
         cx.emit(TerminalViewEvent::FocusRequested);
         cx.notify();
     }
+    pub(in crate::gpui_shell) fn open_failed_reading(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_reading(false, window, cx);
+        self.choose_reading_scope(None, cx);
+        if let Some(panel) = &mut self.reading.panel {
+            panel.failed_only = true;
+            panel.commands_open = true;
+        }
+        cx.notify();
+    }
+
     pub(super) fn close_reading(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.reading.cancel_query();
         self.reading.cancel_copy();

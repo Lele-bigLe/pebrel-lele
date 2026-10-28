@@ -33,6 +33,7 @@ const RESET_KEYS: &[&str] = &[
     "shell",
     "executor",
     "startup_directory",
+    "new_session_target",
     "ghost",
     "accept",
     "completion_style",

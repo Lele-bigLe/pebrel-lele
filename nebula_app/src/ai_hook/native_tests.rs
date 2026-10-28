@@ -198,7 +198,7 @@ fn codex_native_hooks_resume_the_transcript_thread_not_the_runtime_group() {
                 session_id: event.session_id,
                 session_file: event.session_file,
             };
-            assert_eq!(target.resume_command(), Some(format!("codex resume {THREAD}")));
+            assert_eq!(target.resume_command(), Some(format!("codex resume {THREAD} --no-daemon")));
         }
     }
     for transcript in [Value::Null, json!("relative/rollout-invalid.jsonl"), json!(42)] {

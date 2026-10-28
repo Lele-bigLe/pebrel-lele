@@ -15,22 +15,31 @@
 //!    自动把本地内容送去远端一律拒绝。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, DismissEvent, Entity,
     Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, anchored,
-    deferred, div, px, relative,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window,
+    anchored, deferred, div, px, relative,
 };
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::select::SelectItem;
 use nebula_split::SplitDirection;
 
+use crate::ai_agents::AgentKind;
 use crate::gpui_shell::prelude::*;
 use crate::gpui_shell::terminal::view::{InputOrigin, TerminalView};
+use crate::i18n::Message;
 
 use super::{NebulaWorkspace, WorkspaceTab, workspace_ui_language};
+
+mod pending;
+mod targets;
+pub(super) use pending::PendingChat;
+pub(super) use targets::ChatPicker;
 
 const SEND_TO_CHAT_DIALOG_HEIGHT: f32 = 510.0;
 const QUOTE_PREVIEW_HEIGHT: f32 = 132.0;
@@ -42,9 +51,17 @@ pub(super) struct SelectionContextMenu {
     _subscription: Subscription,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum ChatTarget {
+    Pane(u64),
+    New(AgentKind),
+}
+
 #[derive(Clone)]
-struct SendToChatTarget {
-    pane_id: u64,
+pub(super) struct SendToChatTarget {
+    target: ChatTarget,
+    view: Option<WeakEntity<TerminalView>>,
+    project: Option<PathBuf>,
     title: SharedString,
     agent: SharedString,
     /// 目标是远端主机时的 destination。护栏的第一层：选区一旦发过去就离开了
@@ -53,8 +70,20 @@ struct SendToChatTarget {
     search: String,
 }
 
+impl SendToChatTarget {
+    pub(super) fn label_window(&mut self, id: u64, cx: &App) {
+        self.title = crate::gpui_shell::config::ui_language(cx)
+            .format(
+                Message::ChatTargetOtherWindow,
+                &[("id", &id.to_string()), ("title", &self.title)],
+            )
+            .into();
+        self.search = format!("{} {}", self.search, self.title.to_lowercase());
+    }
+}
+
 impl SelectItem for SendToChatTarget {
-    type Value = u64;
+    type Value = ChatTarget;
 
     fn title(&self) -> SharedString {
         self.title.clone()
@@ -110,7 +139,7 @@ impl SelectItem for SendToChatTarget {
     }
 
     fn value(&self) -> &Self::Value {
-        &self.pane_id
+        &self.target
     }
 
     fn matches(&self, query: &str) -> bool {
@@ -228,7 +257,7 @@ impl NebulaWorkspace {
         cx: &mut Context<Self>,
     ) {
         let language = workspace_ui_language();
-        let has_targets = !selection.is_empty() && !self.send_to_chat_targets(cx).is_empty();
+        let has_targets = !selection.is_empty();
         let previous_focus = window.focused(cx);
         let workspace = cx.entity().downgrade();
         let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
@@ -292,7 +321,7 @@ impl NebulaWorkspace {
         )
     }
 
-    fn send_to_chat_targets(&self, cx: &App) -> Vec<SendToChatTarget> {
+    pub(super) fn send_to_chat_targets(&self, cx: &App) -> Vec<SendToChatTarget> {
         let mut targets = Vec::new();
         for (tab_ix, tab) in self.tabs.iter().enumerate() {
             let WorkspaceTab::Terminal { panes, .. } = tab else { continue };
@@ -305,11 +334,24 @@ impl NebulaWorkspace {
                 } else {
                     format!("{} · {}", tab_title, view.title).into()
                 };
+                let project = self.tab_meta.get(tab_ix).and_then(|meta| meta.project_root.clone());
+                let title = project
+                    .as_ref()
+                    .map(|root| {
+                        format!(
+                            "{} · {title}",
+                            root.file_name().unwrap_or(root.as_os_str()).to_string_lossy()
+                        )
+                        .into()
+                    })
+                    .unwrap_or(title);
                 let agent_name: SharedString = agent.display_name.into();
                 let remote: Option<SharedString> =
                     view.ssh_destination.clone().map(SharedString::from);
                 targets.push(SendToChatTarget {
-                    pane_id: pane.id,
+                    target: ChatTarget::Pane(pane.id),
+                    view: Some(pane.view.downgrade()),
+                    project,
                     search: format!(
                         "{title} {agent_name} {}",
                         remote.as_deref().unwrap_or_default()
@@ -324,36 +366,34 @@ impl NebulaWorkspace {
         targets
     }
 
-    fn open_send_to_chat_dialog(
+    pub(super) fn open_send_to_chat_dialog(
         &mut self,
         selection: Arc<str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let language = workspace_ui_language();
-        let targets = self.send_to_chat_targets(cx);
-        if targets.is_empty() {
-            crate::gpui_shell::toast::toast(
-                window,
-                cx,
-                crate::display::ToastKind::Warning,
-                language.pick(
-                    "当前没有可接收消息的 Agent pane",
-                    "No Agent pane can receive this message",
-                ),
-            );
-            return;
-        }
+        let project = self.new_tab_project();
+        self.open_project_chat_dialog(selection, project, window, cx);
+    }
 
-        let target_count = targets.len();
-        let target_labels: Arc<HashMap<u64, SharedString>> =
-            Arc::new(targets.iter().map(|target| (target.pane_id, target.title.clone())).collect());
-        let target_select =
-            cx.new(|cx| SelectState::new(targets, None, window, cx).searchable(target_count > 6));
+    pub(super) fn open_project_chat_dialog(
+        &mut self,
+        selection: Arc<str>,
+        project: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = workspace_ui_language();
+        let picker = self.project_chat_picker(project, window, cx);
+        let project = picker.project.clone();
+        let target_count = picker.count;
+        let target_labels = picker.labels.clone();
+        let target_select = picker.select.clone();
         let comment = cx.new(|cx| InputState::new(window, cx).multi_line(true).soft_wrap(true));
         let workspace = cx.entity().downgrade();
         let quote_text: SharedString = selection.to_string().into();
         let dialog_target_select = target_select.clone();
+        let target_focus = picker.focus_handle();
 
         window.open_dialog(cx, move |dialog, window, cx| {
             let target_selected = dialog_target_select.read(cx).selected_value().is_some();
@@ -385,7 +425,10 @@ impl NebulaWorkspace {
                 );
 
             let body = v_flex()
+                .id("send-to-chat-body")
                 .w_full()
+                .max_h((window.viewport_size().height - px(250.0)).max(px(120.0)))
+                .overflow_y_scrollbar()
                 .gap_3()
                 .child(
                     v_flex()
@@ -397,18 +440,26 @@ impl NebulaWorkspace {
                                 .font_semibold()
                                 .child(language.pick("发送到：", "Send to:")),
                         )
-                        .child(
-                            div().w_full().h_8().child(
-                                Select::new(&dialog_target_select)
-                                    .placeholder(
-                                        language.pick("选择 Agent...", "Choose an Agent..."),
-                                    )
-                                    .search_placeholder(
-                                        language.pick("搜索 Agent...", "Search Agents..."),
-                                    ),
+                        .child(picker.render_control(false, window, cx)),
+                )
+                .when_some(project.as_ref(), |body, root| {
+                    body.child(
+                        div().text_xs().text_color(cx.theme().muted_foreground).truncate().child(
+                            language.format(
+                                Message::ChatTargetProject,
+                                &[("path", &root.display().to_string())],
                             ),
                         ),
-                )
+                    )
+                })
+                .when(target_count == 0, |body| {
+                    body.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().warning)
+                            .child(language.text(Message::ChatTargetEmpty)),
+                    )
+                })
                 .child(quote)
                 .child(
                     v_flex()
@@ -465,6 +516,7 @@ impl NebulaWorkspace {
             let send_comment = comment.clone();
             let send_target = dialog_target_select.clone();
             let send_labels = target_labels.clone();
+            let send_picker = picker.clone();
             center_modal_dialog(dialog, window, SEND_TO_CHAT_DIALOG_HEIGHT)
                 .close_button(false)
                 .overlay_closable(true)
@@ -478,7 +530,7 @@ impl NebulaWorkspace {
                 .footer(footer)
                 .child(body)
                 .on_ok(move |_, window, cx| {
-                    let Some(pane_id) = send_target.read(cx).selected_value().copied() else {
+                    let Some(target) = send_target.read(cx).selected_value().copied() else {
                         crate::gpui_shell::toast::toast(
                             window,
                             cx,
@@ -490,22 +542,27 @@ impl NebulaWorkspace {
                     let comment = send_comment.read(cx).value().to_string();
                     let message = compose_send_to_chat_message(&send_selection, &comment);
                     let Some(workspace) = send_workspace.upgrade() else { return true };
-                    match workspace.update(cx, |workspace, cx| {
-                        workspace.send_to_chat_prompt(pane_id, message, cx)
-                    }) {
+                    let result = workspace.update(cx, |workspace, cx| {
+                        workspace.deliver_project_chat(&send_picker, target, message, window, cx)
+                    });
+                    match result {
                         Ok(()) => {
                             let target = send_labels
-                                .get(&pane_id)
-                                .cloned()
-                                .unwrap_or_else(|| pane_id.to_string().into());
+                                .get(&target)
+                                .map(|(title, _)| title.clone())
+                                .unwrap_or_default();
                             crate::gpui_shell::toast::toast(
                                 window,
                                 cx,
                                 crate::display::ToastKind::Info,
-                                language.format(
-                                    crate::i18n::Message::CommonSentTo,
-                                    &[("target", &target)],
-                                ),
+                                if matches!(
+                                    send_target.read(cx).selected_value(),
+                                    Some(ChatTarget::New(_))
+                                ) {
+                                    language.text(Message::ChatTargetPending).to_owned()
+                                } else {
+                                    language.format(Message::CommonSentTo, &[("target", &target)])
+                                },
                             );
                             true
                         },
@@ -526,32 +583,7 @@ impl NebulaWorkspace {
                     }
                 })
         });
-        let target_focus = target_select.focus_handle(cx);
         target_focus.focus(window, cx);
-    }
-
-    fn send_to_chat_prompt(
-        &mut self,
-        pane_id: u64,
-        message: String,
-        cx: &mut Context<Self>,
-    ) -> Result<(), crate::runtime_api::ApiError> {
-        let Some(tab_ix) = self.tab_of_pane(pane_id) else {
-            return Err(crate::runtime_api::ApiError::new(
-                "target_not_found",
-                format!("pane {pane_id} does not exist"),
-            ));
-        };
-        let view = match self.tabs.get(tab_ix) {
-            Some(WorkspaceTab::Terminal { panes, .. }) => {
-                panes.iter().find(|pane| pane.id == pane_id).map(|pane| pane.view.clone())
-            },
-            _ => None,
-        }
-        .expect("tab_of_pane resolved a terminal pane");
-        // 用户在对话框里当场选定了这个 pane，属于知情选择：远端目标也放行，
-        // 但对话框必须已经把它标成远端主机（见 `send_to_chat_targets`）。
-        view.update(cx, |view, cx| view.runtime_chat_message(message, InputOrigin::User, cx))
     }
 }
 

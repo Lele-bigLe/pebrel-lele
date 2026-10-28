@@ -669,6 +669,7 @@ impl NebulaWorkspace {
                     .flex_1()
                     .min_h_0()
                     .relative()
+                    .pr(px(crate::gpui_shell::widgets::SCROLLBAR_GUTTER))
                     // 必须裁：`uniform_list` 会把行画到自己的 bounds 之外，没有这层
                     // 末行就压过抽屉的下内边距、一直画到抽屉底边，把 8px 留白和下两
                     // 角的圆角都盖掉（用户报的"圆角没了"）。右键菜单走 deferred 顶层
@@ -696,20 +697,9 @@ impl NebulaWorkspace {
                         })
                         .track_scroll(&scroll_handle),
                     )
-                    // 滑块住在一个显式绝对定位的宿主里，和组件库自己的 Table 同构
-                    // （table/state.rs:2182）：直接当普通 child 塞进来它会参与常规
-                    // 布局、排在列表下面占掉一条高度，而不是浮在列表右缘。
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .bottom_0()
-                            // 组件库的 `Scrollbar::width()` 是 crate 私有的，值为
-                            // 轨道 8px + 两侧 4px 内缩（scroll/scrollbar.rs:17）。
-                            .w(px(16.0))
-                            .child(gpui_component::scroll::Scrollbar::vertical(&scroll_handle)),
-                    )
+                    .child(crate::gpui_shell::widgets::scrollbar_gutter(
+                        gpui_component::scroll::Scrollbar::vertical(&scroll_handle),
+                    ))
                     .when_some(empty, |list, empty| {
                         list.child(
                             v_flex()

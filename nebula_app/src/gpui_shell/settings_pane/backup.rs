@@ -82,7 +82,7 @@ impl SettingsPane {
         if self.backup_remote.protocol == BackupProtocol::Off {
             self.backup_selection = recommended();
             self.backup_ui.draft.protocol = BackupProtocol::WebDav;
-            self.backup_ui.draft.webdav_url = "https://dav.jianguoyun.com/dav/pebrel_backup".into();
+            self.backup_ui.draft.webdav_url = "https://dav.jianguoyun.com/dav/".into();
         }
         self.fill_backup_fields(window, cx);
         for input in self
@@ -156,7 +156,7 @@ impl SettingsPane {
         self.read_backup_fields(cx);
         self.backup_ui.draft.protocol = protocol;
         if nutstore {
-            self.backup_ui.draft.webdav_url = "https://dav.jianguoyun.com/dav/pebrel_backup".into();
+            self.backup_ui.draft.webdav_url = "https://dav.jianguoyun.com/dav/".into();
         } else if protocol == BackupProtocol::WebDav
             && self.backup_ui.draft.webdav_url.starts_with("https://dav.jianguoyun.com/")
         {

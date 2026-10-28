@@ -1,6 +1,6 @@
 //! Named layouts reuse the session schema and restore path. No command history or AI resume.
 
-use crate::session::{LayoutSession, Session};
+use crate::session::{LaunchSession, LayoutSession, Session, SplitAxis, TabSession};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -8,12 +8,35 @@ use std::path::{Path, PathBuf};
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct Recipe {
+pub(in crate::gpui_shell::workspace) struct Recipe {
     version: u32,
-    pub(super) name: String,
-    pub(super) session: Session,
+    pub(in crate::gpui_shell::workspace) name: String,
+    pub(in crate::gpui_shell::workspace) session: Session,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::gpui_shell::workspace) startup: Option<Vec<AgentStart>>,
     #[serde(skip)]
-    pub(super) path: PathBuf,
+    pub(in crate::gpui_shell::workspace) path: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(in crate::gpui_shell::workspace) struct AgentStart {
+    pub tab: usize,
+    pub pane: usize,
+    pub source: String,
+}
+
+impl AgentStart {
+    pub(in crate::gpui_shell::workspace) fn command(&self) -> Option<String> {
+        use crate::ai_agents::AgentKind;
+        let agent = AgentKind::parse(&self.source)?;
+        if !matches!(
+            agent,
+            AgentKind::Codex | AgentKind::Claude | AgentKind::Gemini | AgentKind::OpenCode
+        ) {
+            return None;
+        }
+        agent.start_command()
+    }
 }
 
 pub(super) fn directory() -> PathBuf {
@@ -54,10 +77,74 @@ impl Recipe {
             }
         }
         session.window = None;
-        let recipe =
-            Self { version: 1, name: name.trim().to_owned(), session, path: PathBuf::new() };
+        let recipe = Self {
+            version: 1,
+            name: name.trim().to_owned(),
+            session,
+            startup: None,
+            path: PathBuf::new(),
+        };
         recipe.validate()?;
         Ok(recipe)
+    }
+
+    pub(super) fn project(
+        name: String,
+        root: PathBuf,
+        launch: LaunchSession,
+        agent: Option<crate::ai_agents::AgentKind>,
+        split: bool,
+    ) -> Result<Self, String> {
+        if !root.is_absolute() {
+            return Err("Project directory must be absolute".into());
+        }
+        let root = crate::platform::update_installation::canonical(&root)
+            .map_err(|error| error.to_string())?;
+        if !root.is_dir() {
+            return Err("Project directory is unavailable".into());
+        }
+        let cwd = root.to_str().ok_or("Project path is not UTF-8")?.to_owned();
+        let leaf = |name| LayoutSession::Pane {
+            cwd: cwd.clone(),
+            launch: Some(launch.clone()),
+            agent: None,
+            custom_name: name,
+        };
+        let mut tab = TabSession::single(cwd.clone(), Some(name.clone()), None);
+        tab.project_root = Some(root);
+        tab.launch = Some(launch.clone());
+        tab.layout = Some(if agent.is_some() && split {
+            LayoutSession::Split {
+                axis: SplitAxis::LeftRight,
+                ratio_permille: 500,
+                first: Box::new(leaf(agent.map(|agent| agent.display_name().to_owned()))),
+                second: Box::new(leaf(Some("Shell".into()))),
+            }
+        } else {
+            leaf(agent.map(|agent| agent.display_name().to_owned()))
+        });
+        let mut recipe = Self::new(name, Session::new(0, vec![tab]))?;
+        recipe.startup = Some(
+            agent
+                .into_iter()
+                .map(|agent| AgentStart { tab: 0, pane: 0, source: agent.slug().into() })
+                .collect(),
+        );
+        recipe.validate()?;
+        Ok(recipe)
+    }
+
+    pub(super) fn validate_directories(&self) -> Result<(), String> {
+        if self.startup.is_some() {
+            for tab in &self.session.tabs {
+                let root =
+                    tab.project_root.as_ref().ok_or("Project template has no project directory")?;
+                if !root.is_dir() {
+                    return Err(format!("Project directory is unavailable: {}", root.display()));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn panes(&self) -> usize {
@@ -86,6 +173,20 @@ impl Recipe {
                 || tab.layout.as_ref().is_some_and(|layout| !valid_layout(layout, 0))
         }) {
             return Err("Invalid layout tree".into());
+        }
+        if let Some(starts) = &self.startup {
+            let mut seen = std::collections::HashSet::new();
+            if starts.len() > 64
+                || starts.iter().any(|start| {
+                    start.command().is_none()
+                        || !seen.insert((start.tab, start.pane))
+                        || self.session.tabs.get(start.tab).is_none_or(|tab| {
+                            start.pane >= tab.layout.as_ref().map_or(1, LayoutSession::pane_count)
+                        })
+                })
+            {
+                return Err("Invalid project startup target".into());
+            }
         }
         Ok(())
     }

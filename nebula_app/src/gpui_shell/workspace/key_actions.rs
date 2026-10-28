@@ -24,12 +24,13 @@ impl NebulaWorkspace {
         // Validate before activate_tab, which also leaves Settings. Missing
         // numbered tabs must not change the active page or its focus.
         let top = self.tabs_position == nebula_settings::TabsPositionName::Top;
-        let count = if top { self.top_tab_count() } else { self.tabs.len() };
+        let indices = self.sidebar_tab_indices();
+        let count = if top { self.top_tab_count() } else { indices.len() };
         let Some(index) = action.index_for(count) else { return };
         if top {
             self.activate_top_tab(index, window, cx);
         } else {
-            self.activate_tab(index, window, cx);
+            self.activate_tab(indices[index], window, cx);
         }
         // Selecting the current tab still returns focus from a side panel.
         self.focus_active(window, cx);
@@ -52,18 +53,20 @@ impl NebulaWorkspace {
             self.focus_active(window, cx);
             return;
         }
-        let len = self.tabs.len();
+        let indices = self.sidebar_tab_indices();
+        let len = indices.len();
         if len == 0 {
             return;
         }
-        let ix = if self.settings_open {
+        let current = indices.iter().position(|&ix| ix == self.active).unwrap_or(0);
+        let position = if self.settings_open {
             if next { 0 } else { len - 1 }
         } else if next {
-            (self.active + 1) % len
+            (current + 1) % len
         } else {
-            (self.active + len - 1) % len
+            (current + len - 1) % len
         };
-        self.activate_tab(ix, window, cx);
+        self.activate_tab(indices[position], window, cx);
     }
 
     /// Ctrl+Shift+PageUp/PageDown（WT 的 `moveTab forward/backward`）：把活动
@@ -78,7 +81,10 @@ impl NebulaWorkspace {
         if self.settings_open {
             return;
         }
-        let Some(to) = move_target(self.active, self.tabs.len(), right) else { return };
+        let indices = self.sidebar_tab_indices();
+        let Some(position) = indices.iter().position(|&ix| ix == self.active) else { return };
+        let Some(target) = move_target(position, indices.len(), right) else { return };
+        let to = indices[target];
         let from = self.active;
         self.move_tab(from, to, window, cx);
         // 顶栏模式下标签可能刚被挪出可视窗口；侧栏模式同样按整行窗口对齐。

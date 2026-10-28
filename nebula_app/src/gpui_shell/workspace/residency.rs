@@ -55,12 +55,38 @@ impl NebulaWorkspace {
         rx: std::sync::mpsc::Receiver<GpuiShellEvent>,
         cx: &mut Context<Self>,
     ) {
+        use futures::StreamExt as _;
+        use futures::future::{Either, select};
+
+        // Runtime requests wake the UI immediately; idle ticks still publish snapshots.
+        let (forward, mut queued) = futures::channel::mpsc::unbounded();
+        std::thread::Builder::new()
+            .name("pebrel-shell-events".into())
+            .spawn(move || {
+                while let Ok(event) = rx.recv() {
+                    if forward.unbounded_send(event).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn shell event forwarder");
         let executor = cx.background_executor().clone();
         cx.spawn(async move |_this, cx| {
+            let mut open = true;
             loop {
-                executor.timer(Duration::from_millis(120)).await;
+                let tick = executor.timer(Duration::from_millis(120));
                 let mut events = Vec::new();
-                while let Ok(event) = rx.try_recv() {
+                if open {
+                    match select(tick, queued.next()).await {
+                        Either::Left(_) => {},
+                        Either::Right((Some(event), _)) => events.push(event),
+                        // A closed stream must not turn the snapshot loop into a busy spin.
+                        Either::Right((None, _)) => open = false,
+                    }
+                } else {
+                    tick.await;
+                }
+                while let Ok(event) = queued.try_recv() {
                     events.push(event);
                 }
 

@@ -8,6 +8,10 @@ use std::time::Duration;
 use gpui::{Context, Window};
 use nebula_split::SplitTree;
 
+mod changes;
+mod shortcuts;
+mod updates;
+
 use super::{
     NebulaWorkspace, TabMeta, WorkspacePaletteAction, WorkspacePaletteRow, WorkspaceTab,
     new_tab_insert_index,
@@ -68,7 +72,11 @@ pub(super) fn ai_session_palette_rows(
                 hint: format!("恢复 · {source} · {location}"),
                 hint_style: super::WorkspacePaletteHintStyle::Metadata,
                 search: format!("恢复 resume {search}"),
-                action: WorkspacePaletteAction::RunAiSession { command, cwd: cwd.clone() },
+                action: WorkspacePaletteAction::RunAiSession {
+                    command,
+                    cwd: cwd.clone(),
+                    resume: Some((session.source, session.id.clone())),
+                },
                 icon: None,
                 icon_glyph: None,
                 icon_path: None,
@@ -82,7 +90,11 @@ pub(super) fn ai_session_palette_rows(
                 hint: format!("{source} · {location}"),
                 hint_style: super::WorkspacePaletteHintStyle::Metadata,
                 search: format!("分叉 fork {search}"),
-                action: WorkspacePaletteAction::RunAiSession { command, cwd: cwd.clone() },
+                action: WorkspacePaletteAction::RunAiSession {
+                    command,
+                    cwd: cwd.clone(),
+                    resume: None,
+                },
                 icon: None,
                 icon_glyph: None,
                 icon_path: None,
@@ -109,6 +121,88 @@ fn window_minimized(_window: &Window) -> bool {
 }
 
 impl NebulaWorkspace {
+    pub(super) fn new_session_target(cx: &gpui::App) -> nebula_settings::NewSessionTarget {
+        cx.try_global::<crate::gpui_shell::config::Settings>()
+            .map(|settings| settings.new_session_target)
+            .unwrap_or_default()
+    }
+
+    pub(super) fn new_session_target_label(
+        target: nebula_settings::NewSessionTarget,
+        language: crate::display::UiLanguage,
+    ) -> &'static str {
+        if target == nebula_settings::NewSessionTarget::Shell {
+            language.text(crate::i18n::Message::SessionTreeShell)
+        } else {
+            crate::ai_agents::AgentKind::parse(target.settings_value())
+                .map(|kind| kind.display_name())
+                .unwrap_or(target.settings_value())
+        }
+    }
+
+    pub(super) fn set_new_session_target(
+        &mut self,
+        target: nebula_settings::NewSessionTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if Self::new_session_target(cx) == target {
+            return;
+        }
+        let language = super::workspace_ui_language();
+        if let Err(error) = nebula_settings::persist_keys(&[(
+            "new_session_target",
+            target.settings_value().to_owned(),
+        )]) {
+            crate::gpui_shell::toast::toast(
+                window,
+                cx,
+                crate::display::ToastKind::Warning,
+                language.format(
+                    crate::i18n::Message::SettingsSaveFailed,
+                    &[("error", &error.to_string())],
+                ),
+            );
+            return;
+        }
+        self.apply_runtime_settings(cx);
+        cx.refresh_windows();
+        crate::gpui_shell::toast::toast(
+            window,
+            cx,
+            crate::display::ToastKind::Success,
+            language.format(
+                crate::i18n::Message::SessionTreeDefaultSaved,
+                &[("target", Self::new_session_target_label(target, language))],
+            ),
+        );
+    }
+
+    pub(super) fn create_default_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = Self::new_session_target(cx);
+        if target == nebula_settings::NewSessionTarget::Shell {
+            self.add_terminal(window, cx);
+            return;
+        }
+        let Some(command) = crate::ai_agents::AgentKind::parse(target.settings_value())
+            .and_then(|kind| kind.start_command())
+        else {
+            let language = super::workspace_ui_language();
+            crate::gpui_shell::toast::toast(
+                window,
+                cx,
+                crate::display::ToastKind::Warning,
+                language.format(
+                    crate::i18n::Message::SessionTreeUnavailable,
+                    &[("target", Self::new_session_target_label(target, language))],
+                ),
+            );
+            return;
+        };
+        let cwd = self.new_tab_project().or_else(Self::startup_directory);
+        self.add_terminal_at(cwd, Some(command), window, cx);
+    }
+
     /// 只为当前可见的运行态徽章挂一帧。下一帧必须由随后的实际 render 续期，
     /// 因此任务结束、窗口不可见或徽章滚出视口时会自然断链，不留下常驻
     /// animation loop；由 GPUI 的帧源调度，才能跟随显示器刷新节奏。
@@ -380,6 +474,7 @@ impl NebulaWorkspace {
             tab,
             TabMeta {
                 runtime_id: Default::default(),
+                project_root: self.meta(ix).project_root,
                 custom_name: agent.map(|agent| format!("{} 分叉", agent.display_name())),
                 color,
                 shell_tag,

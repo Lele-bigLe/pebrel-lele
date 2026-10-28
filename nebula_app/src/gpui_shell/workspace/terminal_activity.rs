@@ -269,6 +269,9 @@ mod tests {
         window.run_until_parked();
         draw(&mut window);
         draw(&mut window);
+        // The project-picker Popover requests one frame on its first bounds capture.
+        // Consume that mount frame before measuring the steady shared spinner clock.
+        assert_eq!(spinner_tick(&mut window), 2, "project picker mount plus shared spinner");
         for terminal in terminals.iter().take(pane_counts[0]) {
             assert!(painted(terminal, &mut window).text.contains("cache-output"));
         }
@@ -381,9 +384,18 @@ mod tests {
         window.dispatch_action(ToggleSidebar);
         draw(&mut window);
         assert!(workspace.read_with(&window, |workspace, _| workspace.sidebar_collapsed));
+        // Responsive chrome mounts its controls once; hidden spinners must not advance
+        // even during that mount frame, and subsequent frames must remain completely idle.
+        let stopped_phase = workspace.read_with(&window, |workspace, _| workspace.spinner_phase);
+        spinner_tick(&mut window);
+        assert_eq!(
+            workspace.read_with(&window, |workspace, _| workspace.spinner_phase),
+            stopped_phase
+        );
         assert_spinner_stopped(&workspace, &mut window);
         window.dispatch_action(ToggleSidebar);
         draw(&mut window);
+        spinner_tick(&mut window);
         assert_spinner_running(&workspace, &mut window);
 
         window.update(|window, _| assert!(window.is_window_active()));

@@ -1,6 +1,8 @@
 //! Save and restore named window/tab layouts, using the existing session restore authority.
 
+mod project;
 mod store;
+pub(super) use store::Recipe;
 
 use super::*;
 use crate::i18n::Message;
@@ -31,10 +33,18 @@ impl NebulaWorkspace {
             let index = self.tabs.iter().take(self.active).filter(|tab| tab.is_terminal()).count();
             snapshot.tabs.get(index).cloned().map(|tab| Session::new(0, vec![tab]))
         });
-        let library = cx.new(|cx| RecipeLibrary::new(snapshot, tab, window, cx));
-        cx.subscribe_in(&library, window, |_, _, session: &Session, window, cx| {
-            window.close_dialog(cx);
-            windowing::open_recipe_window(session.clone(), cx);
+        let project_root = self.new_tab_project().or_else(|| {
+            self.tabs
+                .get(self.active)
+                .and_then(WorkspaceTab::focused_view)
+                .map(|view| std::path::PathBuf::from(&view.read(cx).cwd))
+        });
+        let library = cx.new(|cx| RecipeLibrary::new(snapshot, tab, project_root, window, cx));
+        cx.subscribe_in(&library, window, |_, _, recipe: &Recipe, window, cx| {
+            match windowing::open_recipe_window(recipe, cx) {
+                Ok(()) => window.close_dialog(cx),
+                Err(error) => window.push_notification(Notification::error(error), cx),
+            }
         })
         .detach();
         let language = crate::gpui_shell::config::ui_language(cx);
@@ -52,14 +62,18 @@ struct RecipeLibrary {
     entries: Vec<store::Recipe>,
     busy: bool,
     error: Option<String>,
+    project_root: Option<std::path::PathBuf>,
+    project_form: Option<Entity<project::ProjectTemplate>>,
+    project_subscription: Option<gpui::Subscription>,
 }
 
-impl EventEmitter<Session> for RecipeLibrary {}
+impl EventEmitter<Recipe> for RecipeLibrary {}
 
 impl RecipeLibrary {
     fn new(
         window_snapshot: Session,
         tab_snapshot: Option<Session>,
+        project_root: Option<std::path::PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -74,9 +88,56 @@ impl RecipeLibrary {
             entries: vec![],
             busy: false,
             error: None,
+            project_root,
+            project_form: None,
+            project_subscription: None,
         };
         this.refresh(cx);
         this
+    }
+
+    fn open(&mut self, recipe: Recipe, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.error = None;
+        let work = cx.background_executor().spawn(async move {
+            recipe.validate_directories()?;
+            Ok::<_, String>(recipe)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(recipe) => cx.emit(recipe),
+                    Err(error) => this.error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn create_project_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let form =
+            cx.new(|cx| project::ProjectTemplate::new(self.project_root.clone(), window, cx));
+        self.project_subscription =
+            Some(cx.subscribe(&form, |this, _, event: &project::ProjectTemplateEvent, cx| {
+                this.project_form = None;
+                this.project_subscription = None;
+                if matches!(event, project::ProjectTemplateEvent::Saved) {
+                    this.refresh(cx);
+                }
+                cx.notify();
+            }));
+        self.project_form = Some(form);
+        cx.notify();
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -168,12 +229,24 @@ impl Render for RecipeLibrary {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let language = crate::gpui_shell::config::ui_language(cx);
         let muted = cx.theme().muted_foreground;
+        if let Some(form) = &self.project_form {
+            return form.clone().into_any_element();
+        }
         let entries = self.entries.clone();
         v_flex()
             .w_full()
             .gap_3()
             .child(
                 div().text_sm().text_color(muted).child(language.text(Message::RecipeDescription)),
+            )
+            .child(
+                Button::new("recipe-new-project")
+                    .small()
+                    .label(language.text(Message::ProjectTemplateCreate))
+                    .disabled(self.busy)
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.create_project_template(window, cx)),
+                    ),
             )
             .child(crate::gpui_shell::widgets::segmented::SegmentedRow::new(
                 "recipe-scope",
@@ -250,7 +323,7 @@ impl Render for RecipeLibrary {
                         )
                     })
                     .children(entries.into_iter().enumerate().map(|(index, recipe)| {
-                        let open = recipe.session.clone();
+                        let open = recipe.clone();
                         h_flex()
                             .w_full()
                             .gap_2()
@@ -264,6 +337,13 @@ impl Render for RecipeLibrary {
                                     .min_w_0()
                                     .gap_1()
                                     .child(div().text_sm().truncate().child(recipe.name.clone()))
+                                    .when(recipe.startup.is_some(), |row| {
+                                        row.child(
+                                            div().text_xs().text_color(muted).child(
+                                                language.text(Message::ProjectTemplateTitle),
+                                            ),
+                                        )
+                                    })
                                     .child(div().text_xs().text_color(muted).child(
                                         language.format(
                                             Message::RecipeCount,
@@ -279,9 +359,9 @@ impl Render for RecipeLibrary {
                                     .small()
                                     .label(language.text(Message::RecipeOpen))
                                     .disabled(self.busy)
-                                    .on_click(
-                                        cx.listener(move |_, _, _, cx| cx.emit(open.clone())),
-                                    ),
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.open(open.clone(), cx)
+                                    })),
                             )
                             .child(
                                 Button::new(("recipe-delete", index))
@@ -296,6 +376,7 @@ impl Render for RecipeLibrary {
                             )
                     })),
             )
+            .into_any_element()
     }
 }
 

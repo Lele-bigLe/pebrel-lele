@@ -32,6 +32,15 @@ fn write_originals(root: &Path, originals: &[OriginalFile]) -> Result<(), String
         .map(|file| restore_path(root, &file.name))
         .collect::<Result<Vec<_>, _>>()?;
     for (original, path) in originals.iter().zip(paths) {
+        let _project_lock = if original.name == "projects.json" {
+            Some(
+                crate::atomic_file::try_lock(&path)
+                    .map_err(|error| error.to_string())?
+                    .ok_or("Project library is busy")?,
+            )
+        } else {
+            None
+        };
         match &original.bytes {
             Some(bytes) => crate::atomic_file::write(&path, bytes)
                 .map_err(|error| format!("undo {}: {error}", original.name))?,

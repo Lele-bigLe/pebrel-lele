@@ -49,6 +49,7 @@ pub(super) struct ReadingPanel {
     pub notice: Option<ReadingIssue>,
     pub commands: Vec<CompletedCommand>,
     pub commands_open: bool,
+    pub failed_only: bool,
     pub highlight: Option<ReadingSpan>,
 }
 

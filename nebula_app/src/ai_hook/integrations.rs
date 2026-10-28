@@ -6,6 +6,9 @@ use nebula_settings::AgentHook;
 
 use crate::ai_agents::AgentKind;
 
+pub(crate) mod codex_rpc;
+pub(crate) mod updates;
+
 pub(crate) const AGENTS: [AgentKind; 9] = [
     AgentKind::Claude,
     AgentKind::Codex,

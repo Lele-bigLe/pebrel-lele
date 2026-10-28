@@ -3,9 +3,22 @@
 //! Hook events are facts; screen matches are observations with limited authority.
 //! Command ownership ends at the shell boundary, never because output goes quiet.
 
-use crate::ai_agents::{AgentStatus, AgentStatusSource, Detection};
+use crate::ai_agents::{AgentKind, AgentStatus, AgentStatusSource, Detection};
 
 use super::{AiHookEvent, AiHookKind};
+
+/// Exact menu/query commands do not start a model turn. Arguments retain the
+/// normal submission path, including inline prompts passed to /plan.
+pub(crate) fn is_session_control_command(program: &str, text: &str) -> bool {
+    matches!(
+        (AgentKind::parse(program), text.trim()),
+        (
+            Some(AgentKind::Codex | AgentKind::Claude),
+            "/model" | "/usage" | "/status" | "/plan" | "/permissions" | "/diff"
+        ) | (Some(AgentKind::Codex), "/presets")
+            | (Some(AgentKind::Claude), "/context")
+    )
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum HookCoverage {
@@ -122,9 +135,9 @@ impl AgentActivity {
     }
 
     pub fn submitted_text(&mut self, program: &str, text: &str) {
-        // Codex /plan 只切换交互模式，不触发任务 hook；若先制造 Running，
-        // 对话输入会一直等一个不存在的完成事件。普通任务仍保留提交屏障。
-        if program == "codex" && text.trim() == "/plan" {
+        // Menu/query commands may not emit task hooks; only real work owns a
+        // pending turn. Physical Enter and these commands just arm observation.
+        if is_session_control_command(program, text) {
             self.input_sent();
         } else {
             self.submitted();

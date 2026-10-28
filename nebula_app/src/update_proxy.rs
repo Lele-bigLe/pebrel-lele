@@ -1,4 +1,4 @@
-//! 更新检查和下载共用的 HTTP 客户端与代理解析。
+//! 更新检查和下载共用的 HTTP 客户端；只读额度查询复用此处的代理解析。
 //!
 //! 1. Windows 系统代理：读注册表并自行解析，不交给 ureq 的
 //!    `win-system-proxy`——它把 `socks=` 条目也拼成 `http://`，会对 SOCKS
@@ -18,7 +18,7 @@ use ureq::{Proxy, ProxyProtocol};
 #[path = "update_proxy/test_support.rs"]
 pub(crate) mod test_support;
 
-/// 解析更新下载应使用的代理；没有可用代理时返回 `None`（直连）。
+/// 解析应用后台请求应使用的系统/环境代理；没有可用代理时直连。
 pub(crate) fn resolve(target_url: &str) -> Option<Proxy> {
     resolve_with_system(raw_system_proxy(target_url), Proxy::try_from_env)
 }

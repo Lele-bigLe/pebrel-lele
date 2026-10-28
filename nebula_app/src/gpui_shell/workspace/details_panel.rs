@@ -69,7 +69,12 @@ impl NebulaWorkspace {
         // The shared model builds snapshots on a worker and exposes a cheap,
         // throttled `sync`. GPUI polls only while the drawer is open; it does
         // not move filesystem business logic into the render function.
-        if !self.side_panel_polling {
+        self.ensure_side_panel_polling(cx);
+        cx.notify();
+    }
+
+    pub(super) fn ensure_side_panel_polling(&mut self, cx: &mut Context<Self>) {
+        if !self.side_panel_polling && (self.side_panel.open || self.side_panel.files_visible) {
             self.side_panel_polling = true;
             let executor = cx.background_executor().clone();
             cx.spawn(async move |this, cx| {
@@ -77,7 +82,7 @@ impl NebulaWorkspace {
                     executor.timer(Duration::from_millis(100)).await;
                     let keep_polling = this
                         .update(cx, |workspace, cx| {
-                            if !workspace.side_panel.open {
+                            if !workspace.side_panel.open && !workspace.side_panel.files_visible {
                                 workspace.side_panel_polling = false;
                                 return false;
                             }
@@ -94,7 +99,30 @@ impl NebulaWorkspace {
             })
             .detach();
         }
-        cx.notify();
+    }
+
+    pub(super) fn sync_side_panel_to_active(
+        &mut self,
+        reset_browse_root: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.side_panel.open && !self.side_panel.files_visible {
+            return false;
+        }
+        let remote_changed = self.sync_remote_browser_to_active(cx);
+        if self.remote_browser.active() {
+            return remote_changed;
+        }
+        let (mut cwd, wsl) = self.side_panel_follow(cx);
+        if self.project_tree_mode(cx) && wsl.is_none() {
+            cwd = self.new_tab_project();
+        }
+        let cleared = reset_browse_root && self.side_panel.clear_custom_root();
+        self.side_panel.sync_at(cwd, wsl) || cleared || remote_changed
+    }
+
+    pub(super) fn right_sidebar_visible(&self, cx: &App) -> bool {
+        self.side_panel.open && !self.workbench_changes(cx)
     }
 
     fn active_details_document(&self, _cx: &App) -> Option<Entity<TextFileView>> {
@@ -149,7 +177,7 @@ impl NebulaWorkspace {
         disabled: bool,
         cx: &mut Context<Self>,
     ) -> Button {
-        let visible = self.side_panel.open && !self.reader_focus_active(cx);
+        let visible = self.right_sidebar_visible(cx) && !self.reader_focus_active(cx);
         toolbar_button("toggle-right-sidebar", IconName::PanelRight)
             .debug_selector(|| "toggle-right-sidebar".to_owned())
             .disabled(disabled)
@@ -157,6 +185,10 @@ impl NebulaWorkspace {
             .when(visible, |button| button.bg(cx.theme().secondary))
             .tooltip(crate::gpui_shell::config::ui_language(cx).text(Message::EditorRightSidebar))
             .on_click(cx.listener(|this, _, _, cx| {
+                if this.workbench_changes(cx) {
+                    this.select_side_panel_view(PanelView::Files, cx);
+                    return;
+                }
                 if this.reader_focus_active(cx) {
                     this.clear_reader_focus(cx);
                     if !this.side_panel.open {
@@ -326,6 +358,9 @@ impl NebulaWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if self.workbench_changes(cx) {
+            return div().into_any_element();
+        }
         let instant = tab_reveal_instant(cx);
         if instant {
             // 切换偏好时面板可能已经关闭，旧动画标志不得保留布局占位。
@@ -409,7 +444,7 @@ impl NebulaWorkspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        if !self.side_panel.open || self.reader_focus_active(cx) || self.settings_open {
+        if !self.right_sidebar_visible(cx) || self.reader_focus_active(cx) || self.settings_open {
             return None;
         }
         let width = if self.details_panel.resize.is_some() {

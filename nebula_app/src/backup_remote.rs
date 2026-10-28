@@ -379,6 +379,8 @@ fn backend_with_secret(
     cfg: &BackupRemoteConfig,
     secret: Option<&str>,
 ) -> Result<Box<dyn Backend>, String> {
+    // Match credential storage and environment loading when checking unsaved input.
+    let secret = secret.map(str::trim).filter(|secret| !secret.is_empty());
     match cfg.protocol {
         BackupProtocol::Off => Err("未启用远程备份：先在设置 → 备份里选择协议".to_owned()),
         BackupProtocol::Folder => {
@@ -407,7 +409,7 @@ fn backend_with_secret(
                 .map(str::to_owned)
                 .or_else(webdav_password)
                 .ok_or("缺少 WebDAV 密码：在设置里输入或设 PEBREL_BACKUP_WEBDAV_PASSWORD")?;
-            Ok(Box::new(WebDavBackend { url, username, password }))
+            Ok(Box::new(WebDavBackend::new(url, username, password)))
         },
         BackupProtocol::S3 => {
             let endpoint = cfg.s3_endpoint.trim().trim_end_matches('/').to_owned();
@@ -600,6 +602,8 @@ impl Backend for FolderBackend {
 struct WebDavBackend {
     /// 目录 URL，已去尾部斜杠。
     url: String,
+    /// 坚果云服务根目录只用于首次连接检查，归档存入独立应用目录。
+    service_root: Option<String>,
     username: String,
     password: String,
 }
@@ -615,6 +619,19 @@ fn http_agent() -> ureq::Agent {
 }
 
 impl WebDavBackend {
+    fn new(url: String, username: String, password: String) -> Self {
+        let nutstore_root = url.parse::<ureq::http::Uri>().is_ok_and(|uri| {
+            uri.scheme_str() == Some("https")
+                && uri.host().is_some_and(|host| host.eq_ignore_ascii_case("dav.jianguoyun.com"))
+                && uri.port_u16().is_none_or(|port| port == 443)
+                && uri.path() == "/dav"
+                && uri.query().is_none()
+        });
+        let service_root = nutstore_root.then(|| url.clone());
+        let url = if nutstore_root { format!("{url}/pebrel_backup") } else { url };
+        Self { url, service_root, username, password }
+    }
+
     fn auth(&self) -> String {
         use base64::Engine as _;
         let raw = format!("{}:{}", self.username, self.password);
@@ -639,7 +656,7 @@ impl WebDavBackend {
     fn mkcol(&self) -> Result<(), String> {
         let request = ureq::http::Request::builder()
             .method("MKCOL")
-            .uri(&self.url)
+            .uri(format!("{}/", self.url))
             .header("Authorization", self.auth())
             .body(Vec::new())
             .map_err(|err| format!("构造 MKCOL 请求失败：{err}"))?;
@@ -648,9 +665,20 @@ impl WebDavBackend {
         match response.status().as_u16() {
             // 405 = 目录已存在（Method Not Allowed on existing collection）。
             200 | 201 | 405 => Ok(()),
-            401 | 403 => Err("认证失败：检查 WebDAV 用户名/密码".to_owned()),
             status => Err(format!("创建远端目录失败：HTTP {status}")),
         }
+    }
+
+    fn propfind(&self, url: &str, depth: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
+        let request = ureq::http::Request::builder()
+            .method("PROPFIND")
+            .uri(format!("{url}/"))
+            .header("Authorization", self.auth())
+            .header("Depth", depth)
+            .header("Content-Type", "application/xml")
+            .body(r#"<?xml version="1.0"?><propfind xmlns="DAV:"><prop><getcontentlength/></prop></propfind>"#.to_owned())
+            .map_err(|err| format!("构造列表请求失败：{err}"))?;
+        http_agent().run(request).map_err(|err| format!("列出远端失败：{err}"))
     }
 }
 
@@ -660,14 +688,13 @@ impl Backend for WebDavBackend {
         let status = match status {
             // 目标目录不存在时多数服务器回 404/409；建目录后重试一次。
             404 | 409 => {
-                self.mkcol()?;
+                self.mkcol().map_err(|error| format!("PUT HTTP {status}; {error}"))?;
                 self.put_once(name, bytes)?
             },
             other => other,
         };
         match status {
             200 | 201 | 204 => Ok(()),
-            401 | 403 => Err("认证失败：检查 WebDAV 用户名/密码".to_owned()),
             other => Err(format!("上传失败：HTTP {other}")),
         }
     }
@@ -680,25 +707,24 @@ impl Backend for WebDavBackend {
             .map_err(|err| format!("下载失败：{err}"))?;
         match response.status().as_u16() {
             200 => response.body_mut().read_to_vec().map_err(|err| format!("读取远端失败：{err}")),
-            401 | 403 => Err("认证失败：检查 WebDAV 用户名/密码".to_owned()),
             status => Err(format!("下载失败：HTTP {status}")),
         }
     }
 
     fn list_details(&self) -> Result<Vec<Snapshot>, String> {
-        let request = ureq::http::Request::builder()
-            .method("PROPFIND")
-            .uri(format!("{}/", self.url))
-            .header("Authorization", self.auth())
-            .header("Depth", "1")
-            .header("Content-Type", "application/xml")
-            .body(r#"<?xml version="1.0"?><propfind xmlns="DAV:"><prop><getcontentlength/></prop></propfind>"#.to_owned())
-            .map_err(|err| format!("构造列表请求失败：{err}"))?;
-        let mut response =
-            http_agent().run(request).map_err(|err| format!("列出远端失败：{err}"))?;
+        let mut response = self.propfind(&self.url, "1")?;
+        if response.status().as_u16() == 404
+            && let Some(root) = &self.service_root
+        {
+            // 首次连接只确认真实服务端可访问；目录在用户执行备份时创建。
+            let response = self.propfind(root, "0")?;
+            return match response.status().as_u16() {
+                200 | 207 => Ok(Vec::new()),
+                status => Err(format!("列出远端失败：HTTP {status}")),
+            };
+        }
         match response.status().as_u16() {
             207 | 200 => {},
-            401 | 403 => return Err("认证失败：检查 WebDAV 用户名/密码".to_owned()),
             status => return Err(format!("列出远端失败：HTTP {status}")),
         }
         let body =
@@ -1268,26 +1294,95 @@ mod tests {
             response("201 Created", "", ""),
             response("401 Unauthorized", "", ""),
         ]);
-        let backend = WebDavBackend {
-            url: format!("http://{}/dav", server.address),
-            username: "user".into(),
-            password: "password".into(),
-        };
+        let backend = WebDavBackend::new(
+            format!("http://{}/dav", server.address),
+            "user".into(),
+            "password".into(),
+        );
         let snapshots = backend.list_details().expect("PROPFIND 必须能真正发送到 WebDAV 服务");
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].name, "pebrel-backup-20260929-010000.nbk");
         assert_eq!(snapshots[0].bytes, Some(123));
         backend.mkcol().expect("MKCOL 必须能真正创建远端目录");
-        assert!(backend.list_details().unwrap_err().contains("认证失败"));
+        assert_eq!(backend.list_details().unwrap_err(), "列出远端失败：HTTP 401");
 
         let requests = server.finish();
         assert!(requests[0].1.starts_with("PROPFIND /dav/ HTTP/1.1\r\n"));
-        assert!(requests[1].1.starts_with("MKCOL /dav HTTP/1.1\r\n"));
+        assert!(requests[1].1.starts_with("MKCOL /dav/ HTTP/1.1\r\n"));
         for (_, headers) in requests {
             assert!(
                 headers.to_ascii_lowercase().contains("authorization: basic dxnlcjpwyxnzd29yza==")
             );
         }
+
+        // 服务地址与归档目录不同；自定义子目录和其他服务器保留原意。
+        for url in ["https://dav.jianguoyun.com/dav", "https://DAV.JIANGUOYUN.COM:443/dav"] {
+            let backend = WebDavBackend::new(url.into(), "user".into(), "password".into());
+            assert_eq!(backend.service_root.as_deref(), Some(url));
+            assert_eq!(backend.file_url("archive.nbk"), format!("{url}/pebrel_backup/archive.nbk"));
+        }
+        for url in [
+            "https://dav.jianguoyun.com/dav/custom",
+            "https://dav.jianguoyun.com.example.org/dav",
+            "https://dav.example.org/dav",
+            "https://dav.jianguoyun.com:8443/dav",
+        ] {
+            let backend = WebDavBackend::new(url.into(), "user".into(), "password".into());
+            assert!(backend.service_root.is_none());
+            assert_eq!(backend.file_url("archive.nbk"), format!("{url}/archive.nbk"));
+        }
+
+        let server = Server::start(vec![
+            response("404 Not Found", "", ""),
+            response("207 Multi-Status", "Content-Type: application/xml\r\n", xml),
+            response("404 Not Found", "", ""),
+            response("201 Created", "", ""),
+            response("201 Created", "", ""),
+        ]);
+        let backend = WebDavBackend {
+            url: format!("http://{}/dav/pebrel_backup", server.address),
+            service_root: Some(format!("http://{}/dav", server.address)),
+            username: "user".into(),
+            password: "password".into(),
+        };
+        assert!(backend.list_details().unwrap().is_empty());
+        backend.put("archive.nbk", b"opaque test archive").unwrap();
+        let requests = server.finish();
+        assert!(requests[0].1.starts_with("PROPFIND /dav/pebrel_backup/ HTTP/1.1\r\n"));
+        assert!(requests[0].1.to_ascii_lowercase().contains("depth: 1\r\n"));
+        assert!(requests[1].1.starts_with("PROPFIND /dav/ HTTP/1.1\r\n"));
+        assert!(requests[1].1.to_ascii_lowercase().contains("depth: 0\r\n"));
+        assert!(requests[2].1.starts_with("PUT /dav/pebrel_backup/archive.nbk HTTP/1.1\r\n"));
+        assert!(requests[3].1.starts_with("MKCOL /dav/pebrel_backup/ HTTP/1.1\r\n"));
+        assert!(requests[4].1.starts_with("PUT /dav/pebrel_backup/archive.nbk HTTP/1.1\r\n"));
+
+        let server = Server::start(vec![
+            response("404 Not Found", "", ""),
+            response("401 Unauthorized", "", ""),
+        ]);
+        let backend = WebDavBackend {
+            url: format!("http://{}/dav/pebrel_backup", server.address),
+            service_root: Some(format!("http://{}/dav", server.address)),
+            username: "user".into(),
+            password: "password".into(),
+        };
+        assert_eq!(backend.list_details().unwrap_err(), "列出远端失败：HTTP 401");
+        assert_eq!(server.finish().len(), 2);
+
+        let server = Server::start(vec![
+            response("409 Conflict", "", ""),
+            response("403 Forbidden", "", ""),
+        ]);
+        let backend = WebDavBackend::new(
+            format!("http://{}/custom", server.address),
+            "user".into(),
+            "password".into(),
+        );
+        assert_eq!(
+            backend.put("archive.nbk", b"opaque test archive").unwrap_err(),
+            "PUT HTTP 409; 创建远端目录失败：HTTP 403"
+        );
+        assert_eq!(server.finish().len(), 2);
     }
 
     #[test]

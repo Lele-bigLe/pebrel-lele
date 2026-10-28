@@ -15,7 +15,10 @@ mod commit_input;
 mod list_model;
 mod rows;
 pub(super) use list_model::VcsList;
+mod branches;
 mod relative_time;
+mod stashes;
+mod worktrees;
 pub(super) use commit_input::CommitInput;
 use relative_time::git_relative_time_at;
 
@@ -30,6 +33,7 @@ impl NebulaWorkspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let language = crate::gpui_shell::config::ui_language(cx);
+        self.sync_vcs_commit(window, cx);
         self.git_commit_input.sync_language(window, cx);
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -41,6 +45,10 @@ impl NebulaWorkspace {
         let op_running = self.side_panel.op_running();
         let op_error = self.side_panel.localized_op_error(language);
         let browsing_elsewhere = self.side_panel.custom_root_active();
+        let local_worktrees = matches!(
+            self.side_panel.git_location(),
+            Some(crate::display::side_panel::GitLocation::Local { .. })
+        );
         let menu_target = cx.entity().downgrade();
         self.vcs_list.sync(git.clone(), git_view, root.clone());
 
@@ -64,12 +72,31 @@ impl NebulaWorkspace {
                             info.branch.clone()
                         }),
                 )
+                .when(info.vcs == VcsKind::Git, |row| {
+                    row.child(
+                        Button::new("git-branches")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::ChevronDown)
+                            .tooltip(language.text(Message::GitControlsBranches))
+                            .disabled(op_running)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_branch_manager(window, cx)
+                            })),
+                    )
+                    .child(Self::git_tools_menu(
+                        &menu_target,
+                        language,
+                        local_worktrees,
+                        op_running,
+                    ))
+                })
                 .when(info.vcs != VcsKind::SvnRepository && info.ahead > 0, |row| {
                     row.child(
                         div().text_xs().text_color(theme.primary).child(format!("↑{}", info.ahead)),
                     )
                 })
-                .when(info.vcs != VcsKind::SvnRepository, |row| {
+                .when(info.vcs == VcsKind::Svn, |row| {
                     row.child(
                         div()
                             .text_xs()
@@ -83,81 +110,67 @@ impl NebulaWorkspace {
                             .child(format!("−{}", compact_line_count(info.minus))),
                     )
                 })
+                .when(op_running, |row| row.child(Spinner::new().xsmall()))
+                .child(self.vcs_refresh_button(Some(info.vcs), cx))
         });
 
-        // 三个入口只显示图形，语义由各自图标和 tooltip 共同承担。每个按钮
-        // `flex_1`，以后追加第四个入口时仍会自动等分，不引入写死宽度。
+        // Keep labels visible so switching views does not move the tab contents.
         let git_nav = git.as_ref().filter(|info| info.vcs == VcsKind::Git).map(|_| {
-            crate::gpui_shell::widgets::segmented::SegmentedRow::new(
-                "git-view-modes",
-                match git_view {
-                    GitPanelView::Changes => 0,
-                    GitPanelView::History => 1,
-                    GitPanelView::Conflicts => 2,
-                },
-                h_flex()
-                    .w_full()
-                    .gap_1()
-                    .child(
-                        Button::new("git-view-changes")
-                            .icon(
-                                Icon::new(Icon::empty())
-                                    .path(crate::gpui_shell::assets::nav::VCS_CHANGES),
-                            )
-                            .flex_1()
-                            .ghost()
-                            .small()
-                            .when(git_view == GitPanelView::Changes, |button| {
-                                button.label(language.text(Message::VcsChanges))
-                            })
-                            .toggled(git_view == GitPanelView::Changes)
-                            .tooltip(language.text(Message::VcsCommitChanges))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.side_panel.select_git_view(GitPanelView::Changes);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("git-view-history")
-                            .icon(
-                                Icon::new(Icon::empty())
-                                    .path(crate::gpui_shell::assets::nav::VCS_HISTORY),
-                            )
-                            .flex_1()
-                            .ghost()
-                            .small()
-                            .when(git_view == GitPanelView::History, |button| {
-                                button.label(language.text(Message::VcsGraph))
-                            })
-                            .toggled(git_view == GitPanelView::History)
-                            .tooltip(language.text(Message::VcsHistoryGraph))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.side_panel.select_git_view(GitPanelView::History);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("git-view-conflicts")
-                            .icon(
-                                Icon::new(Icon::empty())
-                                    .path(crate::gpui_shell::assets::nav::VCS_CONFLICT),
-                            )
-                            .flex_1()
-                            .ghost()
-                            .small()
-                            .when(git_view == GitPanelView::Conflicts, |button| {
-                                button.label(language.text(Message::VcsConflicts))
-                            })
-                            .toggled(git_view == GitPanelView::Conflicts)
-                            .tooltip(language.text(Message::VcsResolveConflicts))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.side_panel.select_git_view(GitPanelView::Conflicts);
-                                cx.notify();
-                            })),
-                    ),
-                div().rounded(cx.theme().radius).bg(cx.theme().tokens.secondary_active),
-            )
-            .w_full()
+            h_flex()
+                .id("git-view-modes")
+                .w_full()
+                .gap_1()
+                .child(
+                    Button::new("git-view-changes")
+                        .icon(
+                            Icon::new(Icon::empty())
+                                .path(crate::gpui_shell::assets::nav::VCS_CHANGES),
+                        )
+                        .flex_1()
+                        .ghost()
+                        .small()
+                        .label(language.text(Message::GitControlsViewFiles))
+                        .toggled(git_view == GitPanelView::Changes)
+                        .tooltip(language.text(Message::VcsCommitChanges))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.side_panel.select_git_view(GitPanelView::Changes);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("git-view-history")
+                        .icon(
+                            Icon::new(Icon::empty())
+                                .path(crate::gpui_shell::assets::nav::VCS_HISTORY),
+                        )
+                        .flex_1()
+                        .ghost()
+                        .small()
+                        .label(language.text(Message::GitControlsViewHistory))
+                        .toggled(git_view == GitPanelView::History)
+                        .tooltip(language.text(Message::VcsHistoryGraph))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.side_panel.select_git_view(GitPanelView::History);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("git-view-conflicts")
+                        .icon(
+                            Icon::new(Icon::empty())
+                                .path(crate::gpui_shell::assets::nav::VCS_CONFLICT),
+                        )
+                        .flex_1()
+                        .ghost()
+                        .small()
+                        .label(language.text(Message::VcsConflicts))
+                        .toggled(git_view == GitPanelView::Conflicts)
+                        .tooltip(language.text(Message::VcsResolveConflicts))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.side_panel.select_git_view(GitPanelView::Conflicts);
+                            cx.notify();
+                        })),
+                )
         });
         let history_head = git
             .as_ref()
@@ -237,15 +250,11 @@ impl NebulaWorkspace {
                     )
             });
 
-        // Git 保留暂存/拉取/推送；SVN 显式提供添加/更新/日志/清理。
+        // Git 的批量动作在分组标题，远端动作在更多菜单；SVN 保留自己的工作副本操作。
         // 服务端仓库只有浏览与检出，避免把无效工作副本命令暴露给用户。
-        let (unstaged_len, staged_len, ahead) = git
-            .as_ref()
-            .map(|info| (info.unstaged.len(), info.staged.len(), info.ahead))
-            .unwrap_or((0, 0, 0));
         let commit_ready = !op_running
             && git.as_ref().is_some_and(|info| match info.vcs {
-                VcsKind::Git => staged_len > 0,
+                VcsKind::Git => !info.staged.is_empty() && info.conflicts.is_empty(),
                 VcsKind::Svn => info.svn_commit_ready(),
                 VcsKind::SvnRepository => false,
             });
@@ -260,69 +269,12 @@ impl NebulaWorkspace {
                 info.vcs != VcsKind::SvnRepository
                     && (info.vcs != VcsKind::Git || git_view == GitPanelView::Changes)
             })
-            .map(|_| {
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(div().flex_1().min_w_0().child(Input::new(&self.git_commit_input.input)))
-                    .child(
-                        Button::new("vcs-commit")
-                            .label(language.text(Message::VcsCommit))
-                            .small()
-                            .disabled(!commit_ready)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.submit_vcs_commit(window, cx);
-                            })),
-                    )
-            });
+            .map(|info| self.render_vcs_commit_form(commit_ready, info.vcs == VcsKind::Git, cx));
         let action_strip = if vcs == Some(VcsKind::Git) && git_view != GitPanelView::Changes {
             None
         } else {
             match vcs {
-                Some(VcsKind::Git) => Some(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(
-                            Button::new("git-stage-all")
-                                .label(language.text(Message::VcsStageAll))
-                                .small()
-                                .disabled(op_running || unstaged_len == 0)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.side_panel.git_stage_all();
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("git-pull")
-                                .label(language.text(Message::VcsPull))
-                                .small()
-                                .disabled(op_running)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.side_panel.git_pull();
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("git-push")
-                                .label(if ahead > 0 {
-                                    SharedString::from(language.format(
-                                        Message::VcsPushAhead,
-                                        &[("count", &ahead.to_string())],
-                                    ))
-                                } else {
-                                    SharedString::from(language.text(Message::VcsPush))
-                                })
-                                .small()
-                                .disabled(op_running || ahead == 0)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.side_panel.git_push();
-                                    cx.notify();
-                                })),
-                        )
-                        .when(op_running, |row| row.child(Spinner::new().xsmall()))
-                        .into_any_element(),
-                ),
+                Some(VcsKind::Git) => None,
                 Some(VcsKind::Svn) => Some(
                     h_flex()
                         .gap_1()
@@ -419,8 +371,6 @@ impl NebulaWorkspace {
                 None => None,
             }
         };
-        let vcs_label =
-            if matches!(vcs, Some(VcsKind::Svn | VcsKind::SvnRepository)) { "SVN" } else { "Git" };
         // 只在 SVN 下问一次（`tortoise_available` 内部缓存，之后免费）。这条提示
         // 存在的理由：没装 TortoiseSVN 时，日志/锁定/属性这些按钮点下去只会在
         // 错误栏里蹦一句话——把"为什么不能用"提前讲清楚，比让用户逐个试出来好。
@@ -453,6 +403,9 @@ impl NebulaWorkspace {
                 )
             })
             .when_some(summary, |panel, summary| panel.child(summary))
+            .when(git.is_none(), |panel| panel.child(
+                h_flex().justify_end().child(self.vcs_refresh_button(None, cx)),
+            ))
             .when_some(git_nav, |panel, nav| panel.child(nav))
             .when_some(history_head, |panel, head| panel.child(head))
             .when_some(repository_notice, |panel, notice| panel.child(notice))
@@ -462,7 +415,7 @@ impl NebulaWorkspace {
                 ))
             })
             .when_some(op_error, |panel, error| {
-                panel.child(div().text_xs().text_color(theme.danger).child(error))
+                panel.child(div().text_xs().whitespace_normal().text_color(theme.danger).child(error))
             })
             .when_some(commit_row, |panel, row| panel.child(row))
             .when_some(action_strip, |panel, row| panel.child(row))
@@ -475,24 +428,37 @@ impl NebulaWorkspace {
                 panel.child(div().text_xs().text_color(theme.warning).child(notice))
             })
             .child(self.render_vcs_list(cx))
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap_1()
-                    .child(
-                        Button::new("git-tree-refresh")
-                            .icon(IconName::Redo2)
-                            .ghost()
-                            .xsmall()
-                            .tooltip(language.format(Message::VcsRefreshStatus, &[("vcs", vcs_label)]))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.side_panel.request_refresh();
-                                this.sync_side_panel_to_active(false, cx);
-                                cx.notify();
-                            })),
-                    ),
-            )
             .into_any_element()
+    }
+
+    fn vcs_refresh_button(
+        &self,
+        vcs: Option<crate::display::side_panel::VcsKind>,
+        cx: &Context<Self>,
+    ) -> Button {
+        let language = crate::gpui_shell::config::ui_language(cx);
+        let name = if matches!(
+            vcs,
+            Some(
+                crate::display::side_panel::VcsKind::Svn
+                    | crate::display::side_panel::VcsKind::SvnRepository
+            )
+        ) {
+            "SVN"
+        } else {
+            "Git"
+        };
+        Button::new("git-tree-refresh")
+            .ghost()
+            .xsmall()
+            .icon(IconName::Redo2)
+            .tooltip(language.format(Message::VcsRefreshStatus, &[("vcs", name)]))
+            .disabled(self.side_panel.op_running())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.side_panel.request_refresh();
+                this.sync_side_panel_to_active(false, cx);
+                cx.notify();
+            }))
     }
 
     /// SVN 工作副本的"更多操作"下拉。

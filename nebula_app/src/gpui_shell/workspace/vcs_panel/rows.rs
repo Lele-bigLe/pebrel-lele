@@ -1,6 +1,7 @@
 //! Construct only the Git/SVN rows requested by the virtual list.
 use super::list_model::{RowOps, VcsRow};
 use super::*;
+use crate::gpui_shell::widgets::{SCROLLBAR_GUTTER, scrollbar_gutter};
 
 impl NebulaWorkspace {
     pub(super) fn render_vcs_list(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -10,6 +11,7 @@ impl NebulaWorkspace {
             .flex_1()
             .min_h_0()
             .relative()
+            .pr(px(SCROLLBAR_GUTTER))
             .overflow_hidden()
             .child(
                 gpui::list(scroll.clone(), move |index, window, cx| {
@@ -19,15 +21,7 @@ impl NebulaWorkspace {
                 })
                 .size_full(),
             )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .bottom_0()
-                    .w(px(16.0))
-                    .child(gpui_component::scroll::Scrollbar::vertical(&scroll)),
-            )
+            .child(scrollbar_gutter(gpui_component::scroll::Scrollbar::vertical(&scroll)))
             .into_any_element()
     }
 
@@ -58,14 +52,84 @@ impl NebulaWorkspace {
         let selected = self.side_panel.selected.clone();
         let menu_target = cx.entity().downgrade();
         let element = match row {
-            VcsRow::Heading { message, count } => h_flex()
-                .h(px(26.0))
+            VcsRow::Heading { section_id, message, count, ops, collapsed } => h_flex()
+                .h(px(28.0))
                 .px_2()
                 .items_center()
+                .gap_1()
                 .text_xs()
                 .text_color(muted)
-                .child(message.map(|m| language.text(m)).unwrap_or("修改"))
-                .child(div().ml_2().child(count.to_string()))
+                .child(
+                    Button::new(SharedString::from(format!("vcs-section-{section_id}")))
+                        .ghost()
+                        .xsmall()
+                        .flex_1()
+                        .min_w_0()
+                        .px_0()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    Icon::new(if collapsed {
+                                        IconName::ChevronRight
+                                    } else {
+                                        IconName::ChevronDown
+                                    })
+                                    .xsmall(),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(message.map(|m| language.text(m)).unwrap_or("修改")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .rounded_sm()
+                                        .px_1()
+                                        .bg(theme.muted)
+                                        .child(count.to_string()),
+                                ),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.vcs_list.toggle_section(section_id);
+                            cx.notify();
+                        })),
+                )
+                .when(matches!(ops, RowOps::Staged | RowOps::Unstaged), |row| {
+                    let expected_root = root.clone();
+                    row.child(
+                        Button::new(if ops == RowOps::Staged {
+                            "git-unstage-all"
+                        } else {
+                            "git-stage-all"
+                        })
+                        .ghost()
+                        .xsmall()
+                        .icon(if ops == RowOps::Staged { IconName::Minus } else { IconName::Plus })
+                        .tooltip(language.text(if ops == RowOps::Staged {
+                            Message::GitControlsUnstageAll
+                        } else {
+                            Message::VcsStageAll
+                        }))
+                        .disabled(self.side_panel.op_running())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if this.side_panel.vcs_root() != expected_root.as_deref() {
+                                return;
+                            }
+                            if ops == RowOps::Staged {
+                                this.side_panel.git_unstage_all();
+                            } else {
+                                this.side_panel.git_stage_all();
+                            }
+                            cx.notify();
+                        })),
+                    )
+                })
                 .into_any_element(),
             VcsRow::Empty(message) => div()
                 .py_2()
@@ -156,6 +220,7 @@ impl NebulaWorkspace {
                     .map(|root| root.join(relative_path))
                     .unwrap_or_else(|| std::path::PathBuf::from(relative_path));
                 let selected_row = selected.as_ref() == Some(&path);
+                let path_hint = path.display().to_string();
                 let status_color = match status {
                     'A' | '?' => theme.success,
                     'D' | '!' => theme.danger,
@@ -177,6 +242,7 @@ impl NebulaWorkspace {
                 let discard_path = relative_path.clone();
                 let resolve_path = relative_path.clone();
                 let diff_path = relative_path.clone();
+                let preview_path = relative_path.clone();
                 let menu_path = relative_path.clone();
                 let merge_button_path = relative_path.clone();
                 let merge_open_path = relative_path.clone();
@@ -200,17 +266,22 @@ impl NebulaWorkspace {
                     .items_center()
                     .rounded_md()
                     .when(selected_row, |row| row.bg(selected_bg))
-                    .hover(|row| row.bg(hover))
+                    .when(!selected_row, |row| row.hover(|row| row.bg(hover)))
+                    .tooltip(move |window, cx| Tooltip::new(path_hint.clone()).build(window, cx))
                     .child(
                         div()
                             .w(px(14.0))
                             .flex_shrink_0()
-                            .font_family(theme.mono_font_family.clone())
+                            .font_family(crate::font_install::REQUIRED_FONT_FAMILY)
                             .text_size(theme.font_size - px(2.0))
                             .text_center()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(status_color)
-                            .child(status.to_string()),
+                            .text_color(if is_git { theme.foreground } else { status_color })
+                            .child(if is_git {
+                                crate::display::side_panel::file_type_icon(&file_name).to_owned()
+                            } else {
+                                status.to_string()
+                            }),
                     )
                     .child(
                         h_flex()
@@ -221,6 +292,9 @@ impl NebulaWorkspace {
                             .child(
                                 div()
                                     .min_w_0()
+                                    .when(!parent.is_empty(), |name| {
+                                        name.max_w(gpui::relative(0.75)).flex_shrink_0()
+                                    })
                                     .truncate()
                                     .font_weight(FontWeight::NORMAL)
                                     .text_size(theme.font_size - px(0.5))
@@ -229,6 +303,7 @@ impl NebulaWorkspace {
                             .when(!parent.is_empty(), |line| {
                                 line.child(
                                     div()
+                                        .flex_1()
                                         .min_w_0()
                                         .truncate()
                                         .font_family(theme.mono_font_family.clone())
@@ -263,6 +338,7 @@ impl NebulaWorkspace {
                                     )
                                 }
                             })
+                            .disabled(self.side_panel.op_running())
                             .when(!discard_armed, |button| {
                                 button
                                     .invisible()
@@ -270,6 +346,7 @@ impl NebulaWorkspace {
                             })
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
+                                    cx.stop_propagation();
                                     if this.vcs_discard_confirm.as_deref()
                                         == Some(discard_path.as_str())
                                     {
@@ -296,10 +373,12 @@ impl NebulaWorkspace {
                             .ghost()
                             .xsmall()
                             .tooltip(language.text(Message::VcsStage))
+                            .disabled(self.side_panel.op_running())
                             .invisible()
                             .group_hover(row_group.clone(), |button| button.visible())
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
+                                    cx.stop_propagation();
                                     this.vcs_discard_confirm = None;
                                     this.side_panel.git_stage_path(&stage_path);
                                     cx.notify();
@@ -316,10 +395,12 @@ impl NebulaWorkspace {
                             .ghost()
                             .xsmall()
                             .tooltip("添加到 SVN")
+                            .disabled(self.side_panel.op_running())
                             .invisible()
                             .group_hover(row_group.clone(), |button| button.visible())
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
+                                    cx.stop_propagation();
                                     this.vcs_discard_confirm = None;
                                     this.side_panel.svn_add_path(&svn_add_path);
                                     cx.notify();
@@ -336,10 +417,12 @@ impl NebulaWorkspace {
                             .ghost()
                             .xsmall()
                             .tooltip("保留当前内容并标记冲突已解决")
+                            .disabled(self.side_panel.op_running())
                             .invisible()
                             .group_hover(row_group.clone(), |button| button.visible())
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
+                                    cx.stop_propagation();
                                     this.vcs_discard_confirm = None;
                                     this.side_panel.svn_resolve_path(&resolve_path);
                                     cx.notify();
@@ -362,10 +445,12 @@ impl NebulaWorkspace {
                             .ghost()
                             .xsmall()
                             .tooltip(language.text(Message::VcsUnstage))
+                            .disabled(self.side_panel.op_running())
                             .invisible()
                             .group_hover(row_group.clone(), |button| button.visible())
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
+                                    cx.stop_propagation();
                                     this.vcs_discard_confirm = None;
                                     this.side_panel.git_unstage_path(&unstage_path);
                                     cx.notify();
@@ -387,19 +472,42 @@ impl NebulaWorkspace {
                             .tooltip(language.text(Message::VcsResolveInMergeEditor))
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
+                                    cx.stop_propagation();
                                     this.open_git_merge_tab(merge_button_path.clone(), window, cx);
                                 },
                             )),
                         )
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .when(is_git, |row| {
+                        row.child(
+                            div()
+                                .w(px(14.0))
+                                .flex_shrink_0()
+                                .text_center()
+                                .font_family(theme.mono_font_family.clone())
+                                .text_xs()
+                                .text_color(status_color)
+                                .child(status.to_string()),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.side_panel.selected = Some(path.clone());
+                        if is_git && ops != RowOps::Conflict {
+                            this.open_git_diff_tab(
+                                preview_path.clone(),
+                                ops == RowOps::Staged,
+                                window,
+                                cx,
+                            );
+                        }
                         cx.notify();
                     }))
                     .on_double_click(cx.listener(move |this, _, window, cx| {
                         if ops == RowOps::Conflict && is_git {
                             this.open_git_merge_tab(merge_open_path.clone(), window, cx);
-                        } else if !svn_diff || !this.side_panel.svn_diff_path(&diff_path) {
+                        } else if !is_git
+                            && (!svn_diff || !this.side_panel.svn_diff_path(&diff_path))
+                        {
                             // Git 与未版本化 SVN 文件仍走现有文档路由。
                             this.open_document_path(open_path.clone(), window, cx);
                         }

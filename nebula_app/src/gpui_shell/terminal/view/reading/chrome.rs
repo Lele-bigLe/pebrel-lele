@@ -2,8 +2,9 @@
 use super::*;
 use gpui::prelude::FluentBuilder as _;
 use gpui_component::{
-    Disableable as _, IconName,
+    Disableable as _, IconName, Selectable as _,
     button::{Button, ButtonVariants as _},
+    h_flex,
     input::Input,
     menu::DropdownMenu as _,
 };
@@ -175,17 +176,45 @@ impl TerminalView {
                 .max_h(px(180.0))
                 .overflow_y_scroll()
                 .child(
-                    Button::new("reading-all")
-                        .small()
-                        .label(t(Message::TerminalReadingAll))
-                        .on_click(
-                            cx.listener(|view, _, _, cx| view.choose_reading_scope(None, cx)),
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("reading-all")
+                                .small()
+                                .label(t(Message::TerminalReadingAll))
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.choose_reading_scope(None, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("reading-failed-only")
+                                .ghost()
+                                .small()
+                                .selected(panel.failed_only)
+                                .label(t(Message::TerminalReadingOnlyFailures))
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    if let Some(panel) = &mut view.reading.panel {
+                                        panel.failed_only = !panel.failed_only;
+                                    }
+                                    cx.notify();
+                                })),
                         ),
                 );
-            if panel.commands.is_empty() {
-                list = list.child(div().child(t(Message::TerminalReadingNoCommands)));
+            let commands: Vec<_> = panel
+                .commands
+                .iter()
+                .filter(|command| {
+                    !panel.failed_only || command.exit_code.is_some_and(|code| code != 0)
+                })
+                .collect();
+            if commands.is_empty() {
+                list = list.child(div().child(t(if panel.failed_only {
+                    Message::TerminalReadingNoFailures
+                } else {
+                    Message::TerminalReadingNoCommands
+                })));
             }
-            for command in &panel.commands {
+            for command in commands {
                 let id = command.id;
                 let label = if command.command.is_empty() {
                     language.format(Message::TerminalReadingExecution, &[("id", &id.to_string())])
@@ -197,6 +226,19 @@ impl TerminalView {
                         .flex()
                         .items_center()
                         .gap_1()
+                        .children(command.exit_code.map(|code| {
+                            div()
+                                .text_xs()
+                                .text_color(if code == 0 {
+                                    cx.theme().muted_foreground
+                                } else {
+                                    cx.theme().warning
+                                })
+                                .child(language.format(
+                                    Message::TerminalReadingExitCode,
+                                    &[("code", &code.to_string())],
+                                ))
+                        }))
                         .child(
                             Button::new(("reading-command", id))
                                 .small()

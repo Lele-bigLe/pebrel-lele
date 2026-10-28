@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::display::color::Rgb;
 
 mod identity;
+pub(crate) mod recovery;
 mod window_layout;
 pub(crate) use identity::codex_rollout_id;
 pub use window_layout::WindowLayout;
@@ -72,8 +73,8 @@ pub enum SplitAxis {
 }
 
 /// 快照瞬间仍在一个 pane 前台运行的 AI CLI 对话。冷恢复用它接续会话：
-/// 身份来自 hook 直报或当前 Codex 会话元数据，缺 id 的
-/// claude 退化成 `--continue`（按 cwd 找最近对话，恰好匹配恢复语义）。
+/// 身份来自 hook 直报或当前原生会话元数据；缺 id 时只保留工具类型，
+/// 通过原生选择器由用户确认目标，不按目录猜测最近对话。
 ///
 /// 只存「安全启动描述」——来源名 + id，不存正文、不存启动参数原文。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,14 +115,15 @@ impl AgentSession {
         match self.session_id.as_deref() {
             Some(id) if agent == crate::ai_agents::AgentKind::Pi && id.starts_with("pid-") => None,
             Some(id) => agent.resume_command(id),
-            // claude 无 id（hook 未装、OSC 认出的启动）：`--continue` 恢复
-            // 当前目录最近一次对话——pane 的 cwd 已经先被恢复，语义正好。
-            None if agent == crate::ai_agents::AgentKind::Claude => {
-                Some("claude --continue".to_owned())
-            },
-            // codex 没有按目录 continue 的形式，缺 id 只能放弃接续。
             _ => None,
         }
+    }
+
+    pub(crate) fn recovery_choice_command(&self) -> Option<String> {
+        if self.session_id.is_some() {
+            return None;
+        }
+        crate::ai_agents::AgentKind::parse(&self.source)?.resume_picker_command()
     }
 }
 
@@ -194,6 +196,9 @@ pub struct TabSession {
     /// because the boot path seeds its first pane from it before the tree is
     /// rebuilt, and v1–v3 files carry nothing else.
     pub cwd: String,
+    /// Explicit project membership, independent of the pane's changing cwd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<PathBuf>,
     /// User override from inline rename. `None` keeps cwd/title-derived labels.
     #[serde(default)]
     pub custom_name: Option<String>,
@@ -214,7 +219,15 @@ pub struct TabSession {
 impl TabSession {
     /// A v3-shaped tab: one pane at `cwd`, default shell.
     pub fn single(cwd: String, custom_name: Option<String>, color: Option<Rgb>) -> Self {
-        Self { cwd, custom_name, color, launch: None, layout: None, active_pane: 0 }
+        Self {
+            cwd,
+            project_root: None,
+            custom_name,
+            color,
+            launch: None,
+            layout: None,
+            active_pane: 0,
+        }
     }
 }
 
@@ -420,6 +433,7 @@ mod tests {
         assert_eq!(session.tabs[0].color, None);
         assert_eq!(session.tabs[0].layout, None);
         assert_eq!(session.tabs[0].launch, None);
+        assert_eq!(session.tabs[0].project_root, None);
     }
 
     #[test]
@@ -548,12 +562,12 @@ mod tests {
             agent("claude", Some("abc-123")).resume_command().as_deref(),
             Some("claude --resume abc-123")
         );
-        assert_eq!(agent("claude", None).resume_command().as_deref(), Some("claude --continue"));
+        assert_eq!(agent("claude", None).resume_command(), None);
         assert_eq!(
             agent("codex", Some("b5f6c1c2-1111-2222-3333-444455556666"))
                 .resume_command()
                 .as_deref(),
-            Some("codex resume b5f6c1c2-1111-2222-3333-444455556666")
+            Some("codex resume b5f6c1c2-1111-2222-3333-444455556666 --no-daemon")
         );
         assert_eq!(agent("codex", None).resume_command(), None);
         assert_eq!(
@@ -636,7 +650,7 @@ mod tests {
             let Some(LayoutSession::Pane { agent: Some(agent), .. }) = &tab.layout else {
                 panic!("saved pane lost its conversation identity");
             };
-            assert_eq!(agent.resume_command(), Some(format!("codex resume {id}")));
+            assert_eq!(agent.resume_command(), Some(format!("codex resume {id} --no-daemon")));
         }
     }
 
@@ -647,6 +661,7 @@ mod tests {
         let path = dir.join("roundtrip.nebula-workspace.json");
 
         let mut tab = TabSession::single("D:/work".into(), Some("Main".into()), None);
+        tab.project_root = Some(PathBuf::from("D:/projects/parent"));
         tab.launch = Some(LaunchSession::Shell {
             name: "Debian (WSL)".into(),
             program: "wsl.exe".into(),

@@ -114,7 +114,7 @@ impl NebulaWorkspace {
             .tooltip(language.text(Message::TerminalReadingShortcut))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.run_workspace_palette_action(
-                    WorkspacePaletteAction::TerminalReading { commands: false },
+                    WorkspacePaletteAction::TerminalReading { commands: false, failed: false },
                     window,
                     cx,
                 );

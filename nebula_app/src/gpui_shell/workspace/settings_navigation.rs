@@ -37,11 +37,16 @@ impl NebulaWorkspace {
                 self.apply_runtime_settings(cx);
                 // 键位编辑器可能改了 keybind= 表：注入/撤销随之热更新。
                 self.apply_custom_keybinds(cx);
+                if matches!(event, SettingsPaneEvent::BackupRestored) {
+                    self.load_project_library(cx);
+                }
                 if matches!(event, SettingsPaneEvent::BackupRestored) && self.command_manager_open {
                     self.refresh_command_manager(window, cx);
                 }
             },
             SettingsPaneEvent::TerminalProfilesChanged => self.refresh_shell_if_open(window, cx),
+            SettingsPaneEvent::CodexUsageChanged => self.refresh_codex_usage(cx),
+            SettingsPaneEvent::UsagePeriodChanged(period) => self.set_usage_period(*period, cx),
             SettingsPaneEvent::LaunchSsh(host) => {
                 self.add_ssh_terminal(host.clone(), window, cx);
             },
@@ -80,6 +85,7 @@ impl NebulaWorkspace {
 
         self.settings_tab_open = true;
         self.settings_open = true;
+        self.refresh_local_usage(cx);
         self.sync_settings_layout(tab_reveal_instant(cx));
 
         self.settings_restore_side_panel_open = self.side_panel.open;
@@ -90,6 +96,8 @@ impl NebulaWorkspace {
         }
 
         if let Some((view, _)) = self.settings_surface.as_ref() {
+            let owner = cx.entity().downgrade();
+            view.update(cx, |view, cx| view.attach_usage_owner(owner, cx));
             view.update(cx, |view, cx| view.refresh_provider_installations(cx));
             let focus = view.read(cx).focus_handle(cx);
             window.defer(cx, move |window, cx| window.focus(&focus, cx));

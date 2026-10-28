@@ -17,9 +17,11 @@ use crate::event::{Event, EventType};
 #[cfg(feature = "legacy-shell")]
 use crate::message_bar::{Message, MessageType};
 
-const RELEASES_API: &str = "https://api.github.com/repos/Kuddev/pebrel/releases/latest";
-pub const RELEASES_PAGE: &str = "https://github.com/Kuddev/pebrel/releases";
-const UPDATE_STATE_FILE: &str = "update_state.json";
+const RELEASES_API: &str = "https://api.github.com/repos/Lele-bigLe/pebrel-lele/releases/latest";
+pub const RELEASES_PAGE: &str = "https://github.com/Lele-bigLe/pebrel-lele/releases";
+pub(crate) const RELEASE_DOWNLOAD_PREFIX: &str =
+    "https://github.com/Lele-bigLe/pebrel-lele/releases/download/";
+const UPDATE_STATE_FILE: &str = "pebrel-lele-update-state.json";
 const REMIND_LATER_SECS: u64 = 3 * 24 * 60 * 60;
 
 pub(crate) mod assets;
@@ -133,7 +135,8 @@ pub fn spawn_once(proxy: EventLoopProxy<Event>) {
         // 等窗口与首个会话安顿好再查，别和启动抢磁盘/网络。
         std::thread::sleep(Duration::from_secs(12));
         let release = match fetch_latest_release() {
-            Ok(release) => release,
+            Ok(Some(release)) => release,
+            Ok(None) => return,
             Err(error) => {
                 log::debug!("update-check: {error}");
                 return;
@@ -197,7 +200,8 @@ pub fn spawn_gpui_once(sender: std::sync::mpsc::Sender<crate::gpui_shell::GpuiSh
         // 对齐旧壳：首屏和首个终端会话稳定后再联网。
         std::thread::sleep(Duration::from_secs(12));
         let result = match check_now() {
-            Ok(result) => result,
+            Ok(Some(result)) => result,
+            Ok(None) => return,
             Err(error) => {
                 log::debug!("update-check: {error}");
                 return;
@@ -219,18 +223,20 @@ pub fn spawn_gpui_once(sender: std::sync::mpsc::Sender<crate::gpui_shell::GpuiSh
 }
 
 /// 立即检查 GitHub 最新 release；调用方必须把它放到后台执行器，避免
-/// 网络等待阻塞 UI 线程。
-pub fn check_now() -> Result<UpdateCheckResult, String> {
+/// 网络等待阻塞 UI 线程。尚未发布版本时返回 `Ok(None)`。
+pub fn check_now() -> Result<Option<UpdateCheckResult>, String> {
     crate::platform::distribution::require_direct_update()?;
-    let release = fetch_latest_release()?;
+    let Some(release) = fetch_latest_release()? else {
+        return Ok(None);
+    };
     let current = env!("CARGO_PKG_VERSION").to_owned();
     let update_available = can_install_version(&release.version)?;
-    Ok(UpdateCheckResult {
+    Ok(Some(UpdateCheckResult {
         update_available,
         current,
         latest: release.version,
         asset: release.asset,
-    })
+    }))
 }
 
 fn update_state_path() -> std::path::PathBuf {
@@ -293,7 +299,7 @@ pub fn skip_version(version: &str) -> Result<(), String> {
     update_prompt_state(|state| state.skip(version))
 }
 
-fn fetch_latest_release() -> Result<LatestRelease, String> {
+fn fetch_latest_release() -> Result<Option<LatestRelease>, String> {
     #[cfg(feature = "update-test-source")]
     if let Some(origin) = test_source::origin()? {
         let url = format!("{origin}/release.json");
@@ -305,7 +311,10 @@ fn fetch_latest_release() -> Result<LatestRelease, String> {
 }
 
 #[cfg(any(test, feature = "update-test-source"))]
-fn fetch_release_with_agent(agent: &ureq::Agent, url: &str) -> Result<LatestRelease, String> {
+fn fetch_release_with_agent(
+    agent: &ureq::Agent,
+    url: &str,
+) -> Result<Option<LatestRelease>, String> {
     // Explicit local rehearsals must never fall back to the public network.
     fetch_release_with_fallback(agent, url, |status| Err(format!("GitHub HTTP {status}")))
 }
@@ -313,14 +322,15 @@ fn fetch_release_with_agent(agent: &ureq::Agent, url: &str) -> Result<LatestRele
 fn fetch_release_with_fallback(
     agent: &ureq::Agent,
     url: &str,
-    on_rate_limit: impl FnOnce(u16) -> Result<LatestRelease, String>,
-) -> Result<LatestRelease, String> {
+    on_rate_limit: impl FnOnce(u16) -> Result<Option<LatestRelease>, String>,
+) -> Result<Option<LatestRelease>, String> {
     let response = agent
         .get(url)
         .header("User-Agent", "pebrel")
         .header("Accept", "application/vnd.github+json")
         .call();
     let mut response = match response {
+        Err(ureq::Error::StatusCode(404)) => return Ok(None),
         Err(ureq::Error::StatusCode(status @ (403 | 429))) => return on_rate_limit(status),
         other => other.map_err(|error| format!("GitHub 请求失败：{error}"))?,
     };
@@ -330,7 +340,7 @@ fn fetch_release_with_fallback(
         .limit(2 * 1024 * 1024)
         .read_to_vec()
         .map_err(|error| format!("GitHub 请求失败：{error}"))?;
-    parse_latest_release(&bytes)
+    parse_latest_release(&bytes).map(Some)
 }
 
 fn parse_latest_release(bytes: &[u8]) -> Result<LatestRelease, String> {
@@ -432,6 +442,7 @@ mod tests {
         )]);
         let result =
             super::fetch_release_with_agent(&server.agent(&[]), "http://api.update.invalid/latest")
+                .unwrap()
                 .unwrap();
         assert_eq!(result.version, "1.7.0");
         let requests = server.finish();

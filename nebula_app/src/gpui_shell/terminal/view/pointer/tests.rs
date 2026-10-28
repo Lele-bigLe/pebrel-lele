@@ -506,7 +506,7 @@ fn ctrl_wheel_font_zoom_toggle_gates_zoom_and_terminal_scroll(cx: &mut TestAppCo
 }
 
 #[gpui::test]
-fn scrollbar_modes_keep_live_drag_visible_and_preserve_hidden_selection(cx: &mut TestAppContext) {
+fn scrollbar_modes_keep_history_and_live_drag_visible(cx: &mut TestAppContext) {
     use nebula_settings::ScrollbarVisibility;
 
     let (terminal, mut window) = terminal_with_history(cx);
@@ -531,10 +531,10 @@ fn scrollbar_modes_keep_live_drag_visible_and_preserve_hidden_selection(cx: &mut
     });
     terminal.update(&mut window, |view, _| view.scroll_to_offset(0, view.scroll_state().0));
     window.simulate_mouse_move(edge, None, Modifiers::default());
-    assert!(terminal.read_with(&window, |view, _| view.scrollbar_thumb(0, history).is_none()));
+    assert!(terminal.read_with(&window, |view, _| view.scrollbar_thumb(0, history).is_some()));
     window.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
-    assert!(terminal.read_with(&window, |view, _| view.selecting));
-    assert!(!terminal.read_with(&window, |view, _| view.scrollbar_dragging()));
+    assert!(!terminal.read_with(&window, |view, _| view.selecting));
+    assert!(terminal.read_with(&window, |view, _| view.scrollbar_dragging()));
     window.simulate_mouse_up(edge, MouseButton::Left, Modifiers::default());
     terminal.update(&mut window, |view, _| {
         view.session.as_ref().unwrap().term.lock().selection = None;

@@ -1877,11 +1877,15 @@ fn wait_run_phased_with_grace(
     start_grace: Duration,
 ) -> Result<RuntimeRunResult, ApiError> {
     let grace = start_grace.min(timeout);
+    let remaining = timeout.saturating_sub(grace);
     let start_timeout = match hub.wait_run(window_id, pane_id, run_id, grace) {
+        // 启动观察窗口不能截短已经开始执行的命令。
+        Err(error) if error.code == "timeout" && !remaining.is_zero() => {
+            return hub.wait_run(window_id, pane_id, run_id, remaining);
+        },
         Err(error) if error.code == "run_start_timeout" => error,
         other => return other,
     };
-    let remaining = timeout.saturating_sub(grace);
     if remaining.is_zero() {
         return Err(start_timeout);
     }

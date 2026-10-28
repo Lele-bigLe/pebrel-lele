@@ -10,6 +10,8 @@ use super::*;
 #[derive(Clone, Debug, Default)]
 pub(super) struct TabMeta {
     pub(super) runtime_id: crate::runtime_api::tabs::TabId,
+    /// 用户指定的项目目录；切换 cwd 不改变项目归属。
+    pub(super) project_root: Option<std::path::PathBuf>,
     /// 用户重命名过的标签名；`None` = 跟着 cwd/文件名自动走。
     pub(super) custom_name: Option<String>,
     /// 色标（右键菜单的标签颜色）；`None` = 不画色条。

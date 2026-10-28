@@ -55,24 +55,65 @@ impl NebulaWorkspace {
         }
         let crashed = crate::session::was_crash(&session);
         crate::session::mark_boot_attempt(&mut session);
-        let mut restored = 0usize;
-        for tab in &session.tabs {
-            if self.restore_tab(tab, resume_ai, window, cx) {
-                restored += 1;
-            }
-        }
-        if restored == 0 {
-            return false;
-        }
-        self.active = session.active_tab.min(self.tabs.len().saturating_sub(1));
-        self.focus_active(window, cx);
-        let text = if crashed {
-            format!("上次未正常退出，已恢复 {restored} 个标签")
-        } else {
-            format!("已恢复 {restored} 个标签")
-        };
-        crate::gpui_shell::toast::toast(window, cx, ToastKind::Success, text);
-        cx.notify();
+        self.pending_session_restore = Some(session.clone());
+        let default_launch = super::shell_launch::configured_local_launch(cx);
+        let work = cx.background_executor().spawn(async move {
+            crate::session::recovery::prepare(session, resume_ai, default_launch)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let prepared = work.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.pending_session_restore.take().is_none() {
+                    return;
+                }
+                let start = this.tabs.len();
+                let mut restored = 0usize;
+                for tab in &prepared.session.tabs {
+                    if this.restore_tab_at(
+                        tab,
+                        resume_ai,
+                        this.tabs.len(),
+                        &prepared.choices,
+                        window,
+                        cx,
+                    ) {
+                        restored += 1;
+                    }
+                }
+                if this.tabs.is_empty() {
+                    this.add_terminal_at(Self::cold_start_cwd(), None, window, cx);
+                } else if start == 0 {
+                    this.active =
+                        prepared.session.active_tab.min(this.tabs.len().saturating_sub(1));
+                    this.focus_active(window, cx);
+                }
+                let language = crate::gpui_shell::config::ui_language(cx);
+                let text = language.format(
+                    if crashed {
+                        crate::i18n::Message::SessionRestoreCrashed
+                    } else {
+                        crate::i18n::Message::SessionRestoreSummary
+                    },
+                    &[
+                        ("restored", &restored.to_string()),
+                        ("busy", &prepared.busy.to_string()),
+                        ("unknown", &prepared.unknown.to_string()),
+                    ],
+                );
+                crate::gpui_shell::toast::toast(
+                    window,
+                    cx,
+                    if prepared.busy + prepared.unknown > 0 {
+                        ToastKind::Warning
+                    } else {
+                        ToastKind::Success
+                    },
+                    text,
+                );
+                cx.notify();
+            });
+        })
+        .detach();
         true
     }
 
@@ -85,7 +126,7 @@ impl NebulaWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.restore_tab_at(tab, resume_ai, self.tabs.len(), window, cx)
+        self.restore_tab_at(tab, resume_ai, self.tabs.len(), &[], window, cx)
     }
 
     pub(super) fn restore_tab_at(
@@ -93,6 +134,7 @@ impl NebulaWorkspace {
         tab: &crate::session::TabSession,
         resume_ai: bool,
         at: usize,
+        choices: &[crate::session::AgentSession],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -151,7 +193,13 @@ impl NebulaWorkspace {
                 });
             }
             if resume_ai && let Some(agent) = agent {
-                pane.view.update(cx, |view, cx| view.restore_agent(agent.clone(), cx));
+                pane.view.update(cx, |view, cx| {
+                    if choices.contains(agent) {
+                        view.restore_agent_selection(agent.clone(), cx);
+                    } else {
+                        view.restore_agent(agent.clone(), cx);
+                    }
+                });
             }
             panes.push(pane);
         }
@@ -171,6 +219,7 @@ impl NebulaWorkspace {
             WorkspaceTab::Terminal { panes, tree, focused, zoomed: false, broadcast: false },
             TabMeta {
                 runtime_id: Default::default(),
+                project_root: tab.project_root.clone(),
                 custom_name: tab.custom_name.clone(),
                 color: tab.color,
                 shell_tag: Self::launch_shell_tag(&saved_launch),
@@ -183,7 +232,7 @@ impl NebulaWorkspace {
 
     /// 当前工作区 → 共享 v4 快照。设置/文档/图片 tab 不进会话（旧壳同
     /// 合同）；AI 会话身份优先取 hook 直报的精确 id，退而取可解析的前台
-    /// 程序名（claude 无 id 恢复成 `--continue`，安全判定在 schema 层）。
+    /// 程序名；没有 id 时保留工具类型，恢复时由原生选择器确认对话。
     ///
     /// 快照一律带 `boot_attempts = 0`：断路器只回答「这次启动活到了第一次
     /// 自动保存没有」（session.rs 模块合同）。agent 恢复目标尚未被 hook /
@@ -193,6 +242,10 @@ impl NebulaWorkspace {
     /// `session_agent()` 落盘，下次启动照旧接续。
     pub(crate) fn snapshot_session(&self, cx: &App) -> crate::session::Session {
         use crate::session::{AgentSession, LaunchSession, Session, TabSession};
+
+        if let Some(pending) = &self.pending_session_restore {
+            return pending.clone();
+        }
 
         let mut tabs = Vec::new();
         let mut active_out = 0usize;
@@ -240,6 +293,7 @@ impl NebulaWorkspace {
             let active_pane = tree.leaves().iter().position(|id| id == focused).unwrap_or(0);
             tabs.push(TabSession {
                 cwd,
+                project_root: meta.project_root,
                 custom_name: meta.custom_name,
                 color: meta.color,
                 launch: Some(launch),

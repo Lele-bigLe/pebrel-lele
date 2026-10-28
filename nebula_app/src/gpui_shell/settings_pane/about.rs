@@ -92,6 +92,9 @@ impl SettingsPane {
             AboutUpdateState::Checking => {
                 (language.pick("正在检查更新…", "Checking for updates...").into(), muted)
             },
+            AboutUpdateState::NoPublishedRelease => {
+                (language.text(crate::i18n::Message::UpdateNoPublishedRelease).into(), muted)
+            },
             AboutUpdateState::UpToDate(latest) => (
                 format!("{} (GitHub v{latest})", language.pick("已是最新版本", "Up to date"))
                     .into(),

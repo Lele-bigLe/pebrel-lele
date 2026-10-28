@@ -5,6 +5,7 @@ pub(super) enum AboutUpdateState {
     #[default]
     Idle,
     Checking,
+    NoPublishedRelease,
     UpToDate(String),
     Available(String),
     Failed(String),

@@ -43,6 +43,7 @@ pub struct Settings {
     /// 已解析的界面语言。GPUI 组件只读这个内存全局，渲染路径不得重复读盘。
     pub ui_language: UiLanguage,
     pub panel_resize: bool,
+    pub new_session_target: nebula_settings::NewSessionTarget,
     pub font_family: String,
     pub font_cjk: Option<[gpui::Font; 4]>,
     pub font_bold_family: String,
@@ -267,6 +268,7 @@ impl Settings {
         Settings {
             ui_language,
             panel_resize: runtime.panel_resize,
+            new_session_target: runtime.new_session_target,
             font_bold_family: secondary(&raw.font.bold),
             font_italic_family: secondary(&raw.font.italic),
             font_bold_italic_family: secondary(&raw.font.bold_italic),

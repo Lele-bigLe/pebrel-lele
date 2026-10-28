@@ -38,6 +38,8 @@ mod ligatures;
 pub use ligatures::Ligatures;
 mod notifications;
 pub use notifications::NotificationDuration;
+mod new_session;
+pub use new_session::NewSessionTarget;
 mod quick_terminal;
 mod scrolling;
 pub use scrolling::{
@@ -1030,6 +1032,8 @@ pub struct RuntimeSettings {
     /// 发行版等）。解析归 shell 检测层，这里只做持久化往返。
     pub shell: Option<String>,
     pub startup_directory: Option<String>,
+    /// Only the explicit workbench new-session control starts this target.
+    pub new_session_target: NewSessionTarget,
     /// AI 内联补全（ghost text）。
     pub ghost: bool,
     pub accept: AcceptKeyName,
@@ -1219,6 +1223,10 @@ impl RuntimeSettings {
             powerline: raw.bool_on("powerline").unwrap_or(true),
             shell: raw.value("shell").or_else(|| raw.value("executor")).map(str::to_owned),
             startup_directory: raw.value("startup_directory").map(str::to_owned),
+            new_session_target: raw
+                .value("new_session_target")
+                .and_then(NewSessionTarget::from_settings)
+                .unwrap_or_default(),
             ghost: raw.value("ghost").map(|v| v != "0").unwrap_or(true),
             accept: raw.value("accept").and_then(AcceptKeyName::from_settings).unwrap_or_default(),
             completion_style: raw

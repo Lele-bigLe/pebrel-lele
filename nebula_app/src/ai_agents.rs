@@ -246,7 +246,7 @@ impl AgentKind {
         valid_session_id(session_id)?;
         Some(match self {
             Self::Claude => format!("claude --resume {session_id}"),
-            Self::Codex => format!("codex resume {session_id}"),
+            Self::Codex => format!("codex resume {session_id} --no-daemon"),
             Self::Gemini => format!("gemini --resume {session_id}"),
             Self::OpenCode => format!("opencode --session {session_id}"),
             Self::Amp => format!("amp threads continue {session_id}"),
@@ -281,7 +281,8 @@ impl AgentKind {
     pub fn start_command(self) -> Option<String> {
         match self {
             Self::Claude => Some("claude".to_owned()),
-            Self::Codex => Some("codex".to_owned()),
+            Self::Codex => Some("codex --no-daemon".to_owned()),
+            Self::Gemini => Some("gemini".to_owned()),
             Self::OpenCode => Some("opencode".to_owned()),
             Self::Cursor => Some("agent".to_owned()),
             Self::Pi => Some("pi".to_owned()),
@@ -291,12 +292,21 @@ impl AgentKind {
         }
     }
 
+    /// Select a native conversation without guessing the most recent thread.
+    pub fn resume_picker_command(self) -> Option<String> {
+        match self {
+            Self::Codex => Some("codex resume --no-daemon".to_owned()),
+            Self::Claude => Some("claude --resume".to_owned()),
+            _ => None,
+        }
+    }
+
     /// Shell-safe fork command for clients with a verified fork syntax.
     pub fn fork_command(self, session_id: &str) -> Option<String> {
         valid_session_id(session_id)?;
         Some(match self {
             Self::Claude => format!("claude --resume {session_id} --fork-session"),
-            Self::Codex => format!("codex fork {session_id}"),
+            Self::Codex => format!("codex fork {session_id} --no-daemon"),
             Self::OpenCode => format!("opencode --session {session_id} --fork"),
             Self::Grok => format!("grok --resume {session_id} --fork-session"),
             Self::Pi => format!("pi --fork {session_id}"),
@@ -934,18 +944,21 @@ mod tests {
     #[test]
     fn commands_are_exact_and_injection_safe() {
         assert_eq!(AgentKind::Claude.start_command().as_deref(), Some("claude"));
-        assert_eq!(AgentKind::Codex.start_command().as_deref(), Some("codex"));
+        assert_eq!(AgentKind::Codex.start_command().as_deref(), Some("codex --no-daemon"));
         assert_eq!(AgentKind::OpenCode.start_command().as_deref(), Some("opencode"));
         assert_eq!(AgentKind::Cursor.start_command().as_deref(), Some("agent"));
         assert_eq!(AgentKind::Pi.start_command().as_deref(), Some("pi"));
         assert_eq!(AgentKind::OhMyPi.start_command().as_deref(), Some("omp"));
         assert_eq!(AgentKind::Kimi.start_command().as_deref(), Some("kimi"));
-        assert_eq!(AgentKind::Gemini.start_command(), None);
+        assert_eq!(AgentKind::Gemini.start_command().as_deref(), Some("gemini"));
         assert_eq!(
             AgentKind::Claude.resume_command("abc-123").as_deref(),
             Some("claude --resume abc-123")
         );
-        assert_eq!(AgentKind::Codex.fork_command("abc-123").as_deref(), Some("codex fork abc-123"));
+        assert_eq!(
+            AgentKind::Codex.fork_command("abc-123").as_deref(),
+            Some("codex fork abc-123 --no-daemon")
+        );
         assert_eq!(
             AgentKind::OpenCode.fork_command("abc-123").as_deref(),
             Some("opencode --session abc-123 --fork")

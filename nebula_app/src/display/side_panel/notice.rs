@@ -9,6 +9,7 @@ pub(crate) enum PanelNotice {
     DirectoryUnavailable,
     FollowingDirectory,
     CommandFailed(String),
+    CommitPushFailed(Box<PanelNotice>),
     TaskStartFailed(String),
     PathUnavailable,
     DeleteFailed(String),
@@ -48,6 +49,8 @@ impl PanelNotice {
             Self::CommandFailed(program) => {
                 language.format(Message::VcsCommandFailed, &[("program", program)])
             },
+            Self::CommitPushFailed(error) => language
+                .format(Message::GitControlsCommitPushFailed, &[("error", &error.text(language))]),
             Self::TaskStartFailed(error) => {
                 language.format(Message::VcsTaskStartFailed, &[("error", error)])
             },

@@ -14,6 +14,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod annotations;
+pub(crate) mod changes;
+mod native;
+pub(crate) mod transcript;
+
 /// 每个会话文件最多读多少字节找标题。
 const HEAD_BYTES: usize = 64 * 1024;
 /// 防止 hook registry 被异常长标题撑大；这不是 UI 的视觉截断阈值。
@@ -33,7 +38,7 @@ pub struct AiSession {
     /// 副信息：claude 是项目目录，codex 是会话的 cwd。
     pub project: String,
     pub modified: SystemTime,
-    path: Option<PathBuf>,
+    pub(crate) path: Option<PathBuf>,
 }
 
 impl AiSession {
@@ -59,7 +64,7 @@ impl AiSession {
         self.source.fork_command(&self.id)
     }
 
-    /// hint 里的位置词。codex 有真实 cwd，取末段目录名；claude 只有编码过的
+    /// hint 里的位置词。已有真实 cwd 时取末段目录名；旧 Claude 索引只有编码过的
     /// 项目目录名（`D--temp-build-nebula`，分隔符和 `_` 都压成了 `-`，不可逆），
     /// 取最后一个 `-` 后的尾段——不完整但足够认出"是哪个项目"。
     pub fn place_label(&self) -> String {
@@ -68,7 +73,7 @@ impl AiSession {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            crate::ai_agents::AgentKind::Claude => {
+            crate::ai_agents::AgentKind::Claude if !Path::new(&self.project).is_absolute() => {
                 self.project.rsplit('-').next().unwrap_or("").to_owned()
             },
             _ => Path::new(&self.project)
@@ -79,6 +84,10 @@ impl AiSession {
     }
 
     fn fill_details(&mut self) {
+        if !matches!(self.source, AiSessionSource::Codex | AiSessionSource::Claude) {
+            self.ensure_title();
+            return;
+        }
         let Some(path) = self.path.as_deref() else {
             self.ensure_title();
             return;
@@ -91,6 +100,13 @@ impl AiSession {
             crate::ai_agents::AgentKind::Claude => {
                 if let Some(title) = claude_title(&head) {
                     self.title = title;
+                }
+                if let Some(cwd) = head
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .find_map(|value| value.get("cwd").and_then(|v| v.as_str()).map(str::to_owned))
+                {
+                    self.project = cwd;
                 }
             },
             crate::ai_agents::AgentKind::Codex => {
@@ -249,9 +265,23 @@ fn registry_sessions() -> Vec<AiSession> {
 
 /// 扫描 CLI 原生档案并与 hook 索引合并；同一 source/id 只保留一条。
 pub fn scan(limit: usize) -> Vec<AiSession> {
+    scan_sources(limit, false)
+}
+
+/// Full history runs in an owned background task; quick navigation keeps its
+/// existing bounded header reads rather than parsing Gemini transcripts on UI.
+pub fn scan_history(limit: usize) -> Vec<AiSession> {
+    scan_sources(limit, true)
+}
+
+fn scan_sources(limit: usize, native_indexes: bool) -> Vec<AiSession> {
     let mut all = Vec::new();
     all.extend(scan_claude());
     all.extend(scan_codex());
+    if native_indexes {
+        all.extend(native::scan_opencode(limit));
+        all.extend(native::scan_gemini(limit));
+    }
     let mut by_key: HashMap<(crate::ai_agents::AgentKind, String), usize> = all
         .iter()
         .enumerate()
@@ -277,6 +307,9 @@ pub fn scan(limit: usize) -> Vec<AiSession> {
     all.truncate(limit);
     for session in &mut all {
         session.fill_details();
+    }
+    if native_indexes {
+        native::apply_codex_titles(&mut all);
     }
     all
 }
@@ -304,21 +337,51 @@ fn home_dir() -> Option<PathBuf> {
     }
 }
 
-fn modified_of(path: &Path) -> SystemTime {
-    path.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH)
+fn scan_entries(path: &Path, partial: &mut bool) -> Vec<std::fs::DirEntry> {
+    match std::fs::read_dir(path) {
+        Ok(entries) => {
+            entries.filter_map(|entry| entry.map_err(|_| *partial = true).ok()).collect()
+        },
+        Err(error) => {
+            *partial |= error.kind() != std::io::ErrorKind::NotFound;
+            Vec::new()
+        },
+    }
+}
+
+fn scan_directory(path: &Path, partial: &mut bool) -> bool {
+    match path.metadata() {
+        Ok(metadata) => metadata.is_dir(),
+        Err(_) => {
+            *partial = true;
+            false
+        },
+    }
+}
+
+fn modified_of(path: &Path, partial: &mut bool) -> SystemTime {
+    path.metadata().and_then(|m| m.modified()).unwrap_or_else(|_| {
+        *partial = true;
+        SystemTime::UNIX_EPOCH
+    })
 }
 
 /// `~/.claude/projects/<编码目录>/<uuid>.jsonl`，一个文件一个会话。
 fn scan_claude() -> Vec<AiSession> {
-    let Some(root) = home_dir().map(|h| h.join(".claude").join("projects")) else {
+    scan_claude_files(&mut false)
+}
+
+fn scan_claude_files(partial: &mut bool) -> Vec<AiSession> {
+    let Some(root) = claude_root().map(|root| root.join("projects")) else {
         return Vec::new();
     };
-    let Ok(projects) = std::fs::read_dir(root) else { return Vec::new() };
     let mut out = Vec::new();
-    for project in projects.flatten() {
+    for project in scan_entries(&root, partial) {
+        if !scan_directory(&project.path(), partial) {
+            continue;
+        }
         let project_label = project.file_name().to_string_lossy().into_owned();
-        let Ok(files) = std::fs::read_dir(project.path()) else { continue };
-        for file in files.flatten() {
+        for file in scan_entries(&project.path(), partial) {
             let path = file.path();
             if path.extension().is_none_or(|e| e != "jsonl") {
                 continue;
@@ -331,7 +394,7 @@ fn scan_claude() -> Vec<AiSession> {
                 id,
                 title: String::new(),
                 project: project_label.clone(),
-                modified: modified_of(&path),
+                modified: modified_of(&path, partial),
                 path: Some(path),
             });
         }
@@ -339,19 +402,29 @@ fn scan_claude() -> Vec<AiSession> {
     out
 }
 
+pub(crate) fn claude_root() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".claude")))
+}
+
 /// `~/.codex/sessions/YYYY/MM/DD/rollout-<时间戳>-<uuid>.jsonl`。
 fn scan_codex() -> Vec<AiSession> {
-    let Some(root) = home_dir().map(|h| h.join(".codex").join("sessions")) else {
+    let Some(root) = crate::codex_config::codex_home().map(|root| root.join("sessions")) else {
         return Vec::new();
     };
+    scan_codex_at(root, &mut false)
+}
+
+fn scan_codex_at(root: PathBuf, partial: &mut bool) -> Vec<AiSession> {
     let mut out = Vec::new();
     // 目录按年/月/日三层嵌套；有限深度的手写递归比引一个 walkdir 轻。
     let mut stack = vec![(root, 0u8)];
     while let Some((dir, depth)) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(dir) else { continue };
-        for entry in entries.flatten() {
+        for entry in scan_entries(&dir, partial) {
             let path = entry.path();
-            if path.is_dir() {
+            if scan_directory(&path, partial) {
                 if depth < 4 {
                     stack.push((path, depth + 1));
                 }
@@ -366,12 +439,42 @@ fn scan_codex() -> Vec<AiSession> {
                 id,
                 title: String::new(),
                 project: String::new(),
-                modified: modified_of(&path),
+                modified: modified_of(&path, partial),
                 path: Some(path),
             });
         }
     }
     out
+}
+
+#[cfg(feature = "gpui-shell")]
+pub(crate) fn codex_rollouts() -> Vec<(String, PathBuf, SystemTime)> {
+    scan_codex()
+        .into_iter()
+        .filter_map(|session| Some((session.id, session.path?, session.modified)))
+        .collect()
+}
+
+#[cfg(feature = "gpui-shell")]
+/// History discovery is best-effort; usage callers must preserve the incomplete-scan flag.
+pub(crate) fn usage_files() -> (Vec<AiSession>, bool) {
+    let mut partial = false;
+    let mut sessions = scan_claude_files(&mut partial);
+    if let Some(root) = crate::codex_config::codex_home() {
+        sessions.extend(scan_codex_at(root.join("sessions"), &mut partial));
+        sessions.extend(scan_codex_at(root.join("archived_sessions"), &mut partial));
+    }
+    sessions.extend(native::gemini_files(&mut partial).into_iter().map(
+        |(modified, path, project)| AiSession {
+            source: crate::ai_agents::AgentKind::Gemini,
+            id: String::new(),
+            title: String::new(),
+            project,
+            modified,
+            path: Some(path),
+        },
+    ));
+    (sessions, partial)
 }
 
 /// rollout 文件名末尾是会话 uuid：`rollout-2026-08-01T12-30-00-<uuid>.jsonl`。
@@ -604,8 +707,8 @@ mod tests {
             Some("claude --resume abc-123 --fork-session")
         );
         let codex = AiSession { source: AiSessionSource::Codex, ..claude };
-        assert_eq!(codex.resume_command().as_deref(), Some("codex resume abc-123"));
-        assert_eq!(codex.fork_command().as_deref(), Some("codex fork abc-123"));
+        assert_eq!(codex.resume_command().as_deref(), Some("codex resume abc-123 --no-daemon"));
+        assert_eq!(codex.fork_command().as_deref(), Some("codex fork abc-123 --no-daemon"));
     }
 
     #[test]

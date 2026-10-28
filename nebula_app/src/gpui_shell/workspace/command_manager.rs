@@ -591,15 +591,16 @@ impl NebulaWorkspace {
                 .relative()
                 .size_full()
                 .min_h_0()
+                .when(list_scrollable, |list| {
+                    list.pr(px(crate::gpui_shell::widgets::SCROLLBAR_GUTTER))
+                })
                 .overflow_hidden()
                 .child(list)
                 .when(list_scrollable, |list| {
-                    list.child(
-                        div().absolute().top_0().right_0().bottom_0().w(px(16.0)).child(
-                            gpui_component::scroll::Scrollbar::vertical(&scroll_handle)
-                                .scrollbar_show(gpui_component::scroll::ScrollbarShow::Always),
-                        ),
-                    )
+                    list.child(crate::gpui_shell::widgets::scrollbar_gutter(
+                        gpui_component::scroll::Scrollbar::vertical(&scroll_handle)
+                            .scrollbar_show(gpui_component::scroll::ScrollbarShow::Always),
+                    ))
                 })
                 .into_any_element()
         };

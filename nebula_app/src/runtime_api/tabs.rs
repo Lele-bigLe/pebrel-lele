@@ -7,7 +7,7 @@ use std::path::PathBuf;
 pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_CHUNK_BYTES: usize = 64 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TabId(pub String);
 
 impl Default for TabId {

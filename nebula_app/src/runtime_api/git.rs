@@ -14,8 +14,15 @@ use crate::runtime_exec::PaneExecContext;
 
 const LIMIT: usize = 256 * 1024;
 const DEADLINE: Duration = Duration::from_secs(25);
+mod comparison;
+mod desktop_changes;
+pub(crate) use comparison::read_comparison;
+pub(crate) mod patch;
+pub(crate) use desktop_changes::{
+    StashInfo, StashSnapshot, read_stash_diff, read_stashes, stage_hunk,
+};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     window_id: u64,
@@ -143,7 +150,7 @@ impl Repository {
                 .details(json!({"stderr": result["stderr"], "exit_code": result["exit_code"]})));
         }
         if result["capture"]["stdout"]["truncated"] == true {
-            return Err(ApiError::new("git_too_large", "Git output exceeds the mobile view limit"));
+            return Err(ApiError::new("git_too_large", "Git output exceeds the preview limit"));
         }
         if result["capture"]["stdout"]["encoding"] != "utf-8" {
             return Err(ApiError::new("git_encoding", "Git output is not UTF-8"));
@@ -326,5 +333,142 @@ pub(crate) fn execute(
     repo.mutate(request, &status)
 }
 
+/// Desktop preview reuses the same literal path, rename, unborn-HEAD, timeout
+/// and bounded-output rules as the paired phone. This entry is read-only.
+pub(crate) fn read_diff(
+    location: &crate::display::side_panel::GitLocation,
+    path: String,
+    staged: bool,
+) -> Result<String, ApiError> {
+    let (context, cwd) = desktop_context(location);
+    let request = Request {
+        expected_cwd: cwd.clone(),
+        path,
+        staged,
+        operation: "diff".into(),
+        ..Default::default()
+    };
+    let result = execute(context, cwd, &request)?;
+    result
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| ApiError::new("git_failed", "Git did not return a diff"))
+}
+
+fn desktop_context(
+    location: &crate::display::side_panel::GitLocation,
+) -> (PaneExecContext, String) {
+    use crate::display::side_panel::GitLocation;
+    let (cwd, shell) = match location {
+        GitLocation::Local { root } => (root.display().to_string(), None),
+        GitLocation::Wsl { distro, root } => (
+            root.clone(),
+            Some(nebula_terminal::tty::Shell::new(
+                "wsl.exe".into(),
+                vec!["--distribution".into(), distro.clone()],
+            )),
+        ),
+    };
+    let context = PaneExecContext::from_pty_options(&nebula_terminal::tty::Options {
+        shell,
+        working_directory: Some(cwd.clone().into()),
+        ..Default::default()
+    });
+    (context, cwd)
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WorktreeInfo {
+    pub path: String,
+    pub branch: String,
+    pub head: String,
+    pub locked: bool,
+    pub prunable: bool,
+    pub bare: bool,
+}
+
+/// NUL-delimited porcelain preserves spaces, newlines and quotes in directory names.
+pub(crate) fn read_worktrees(
+    location: &crate::display::side_panel::GitLocation,
+) -> Result<Vec<WorktreeInfo>, ApiError> {
+    let (context, cwd) = desktop_context(location);
+    let repo =
+        Repository { context: context.for_git(), root: cwd.clone(), cwd, started: Instant::now() };
+    let text = repo.run(&["worktree", "list", "--porcelain", "-z"], false)?;
+    let invalid = || ApiError::new("git_worktree_invalid", "Invalid Git worktree listing");
+    let mut entries = Vec::new();
+    let mut current: Option<WorktreeInfo> = None;
+    for field in text.split('\0') {
+        if field.is_empty() {
+            if let Some(entry) = current.take() {
+                if entry.path.is_empty() || (!entry.bare && entry.head.is_empty()) {
+                    return Err(invalid());
+                }
+                entries.push(entry);
+                if entries.len() > 256 {
+                    return Err(ApiError::new("git_too_large", "Too many worktrees to display"));
+                }
+            }
+        } else if let Some(path) = field.strip_prefix("worktree ") {
+            if current.is_some() {
+                return Err(invalid());
+            }
+            current = Some(WorktreeInfo { path: path.into(), ..Default::default() });
+        } else {
+            let entry = current.as_mut().ok_or_else(invalid)?;
+            if let Some(head) = field.strip_prefix("HEAD ") {
+                entry.head = head.into();
+            } else if let Some(branch) = field.strip_prefix("branch ") {
+                entry.branch = branch.strip_prefix("refs/heads/").unwrap_or(branch).into();
+            } else if field == "bare" {
+                entry.bare = true;
+            } else if field == "locked" || field.starts_with("locked ") {
+                entry.locked = true;
+            } else if field == "prunable" || field.starts_with("prunable ") {
+                entry.prunable = true;
+            }
+        }
+    }
+    if current.is_some() || entries.is_empty() {
+        return Err(invalid());
+    }
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests;
+
+pub(crate) struct BranchInfo {
+    pub name: String,
+    pub current: bool,
+}
+
+/// Branch names and the HEAD marker come from the same bounded Git read.
+pub(crate) fn read_branches(
+    location: &crate::display::side_panel::GitLocation,
+) -> Result<Vec<BranchInfo>, ApiError> {
+    let (context, cwd) = desktop_context(location);
+    let repo =
+        Repository { context: context.for_git(), root: cwd.clone(), cwd, started: Instant::now() };
+    let text = repo.run(
+        &["for-each-ref", "--sort=refname", "--format=%(HEAD)%00%(refname)", "refs/heads/"],
+        false,
+    )?;
+    let branches: Vec<_> = text
+        .lines()
+        .map(|line| {
+            let (marker, reference) = line
+                .split_once('\0')
+                .ok_or_else(|| ApiError::new("git_failed", "Invalid branch listing"))?;
+            let name = reference
+                .strip_prefix("refs/heads/")
+                .ok_or_else(|| ApiError::new("git_failed", "Invalid local branch reference"))?;
+            Ok(BranchInfo { name: name.to_owned(), current: marker == "*" })
+        })
+        .collect::<Result<_, ApiError>>()?;
+    if branches.len() > 4096 {
+        return Err(ApiError::new("git_too_large", "Too many local branches to display"));
+    }
+    Ok(branches)
+}

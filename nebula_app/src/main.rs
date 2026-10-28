@@ -42,6 +42,8 @@ mod ai_assistant;
 mod ai_hook;
 mod ai_providers;
 mod ai_sessions;
+#[cfg(feature = "gpui-shell")]
+mod ai_usage;
 mod app_icon;
 mod assistant_answer;
 mod atomic_file;
@@ -99,6 +101,7 @@ mod plugins;
 #[cfg(all(unix, feature = "legacy-shell"))]
 mod polling;
 mod process_tree;
+mod project_library;
 mod provider_test;
 mod proxy_test;
 mod remote_dirs;

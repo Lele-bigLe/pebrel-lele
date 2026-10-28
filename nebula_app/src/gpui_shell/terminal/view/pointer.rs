@@ -6,6 +6,39 @@ use gpui_component::WindowExt as _;
 mod tests;
 
 impl TerminalView {
+    pub(super) fn render_scrollbar(cx: &mut Context<Self>) -> gpui::AnyElement {
+        let view = cx.entity().downgrade();
+        gpui::canvas(
+            |_, _, _| (),
+            move |_, _, window, cx| {
+                let Some(view) = view.upgrade() else { return };
+                let view = view.read(cx);
+                let (offset, history) = view.scroll_state();
+                if view.scrollbar_geometry(offset, history).is_none()
+                    || (view.scrollbar_visibility == nebula_settings::ScrollbarVisibility::Hover
+                        && !view.scrollbar_highlighted())
+                {
+                    return;
+                }
+                let track = view.scrollbar_track();
+                window.paint_quad(
+                    gpui::fill(track, cx.theme().foreground.opacity(0.06))
+                        .corner_radii(track.size.width / 2.0),
+                );
+                let Some(thumb) = view.scrollbar_thumb(offset, history) else { return };
+                let color = if view.scrollbar_highlighted() {
+                    cx.theme().scrollbar_thumb_hover
+                } else {
+                    cx.theme().scrollbar_thumb
+                };
+                window.paint_quad(gpui::fill(thumb, color).corner_radii(thumb.size.width / 2.0));
+            },
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
+    }
+
     pub(in crate::gpui_shell::terminal) fn scrollbar_thumb(
         &self,
         display_offset: usize,
@@ -13,7 +46,9 @@ impl TerminalView {
     ) -> Option<Bounds<Pixels>> {
         let visible = self.scrollbar_drag.is_some()
             || match self.scrollbar_visibility {
-                nebula_settings::ScrollbarVisibility::Auto => display_offset > 0,
+                nebula_settings::ScrollbarVisibility::Auto => {
+                    display_offset > 0 || self.scrollbar_hovered
+                },
                 nebula_settings::ScrollbarVisibility::Hover => self.scrollbar_hovered,
                 nebula_settings::ScrollbarVisibility::Always => true,
             };
@@ -26,8 +61,9 @@ impl TerminalView {
         if screen == 0 || total <= screen {
             return None;
         }
-        let track_top = self.origin.y.as_f32();
-        let track_h = self.line_height.as_f32() * screen as f32;
+        let track = self.scrollbar_track();
+        let track_top = track.origin.y.as_f32();
+        let track_h = track.size.height.as_f32();
         if track_h <= 1.0 {
             return None;
         }
@@ -37,10 +73,8 @@ impl TerminalView {
         let above = (history - display_offset) as f32;
         let max_y = (track_h - thumb_h).max(0.0);
         let thumb_y = track_top + (max_y * above / history as f32).clamp(0.0, max_y);
-        // 浮在网格右缘（overlay 风格：不占列宽、不画轨道）。
-        let grid_right = self.origin.x.as_f32() + self.cell_width.as_f32() * self.cols as f32;
         Some(Bounds::new(
-            point(px(grid_right - SCROLLBAR_W), px(thumb_y)),
+            point(track.origin.x, px(thumb_y)),
             gpui::size(px(SCROLLBAR_W), px(thumb_h)),
         ))
     }
@@ -53,12 +87,19 @@ impl TerminalView {
         self.scrollbar_dragging() || self.scrollbar_hovered
     }
 
-    fn scrollbar_hot_zone(&self) -> Bounds<Pixels> {
+    fn scrollbar_track(&self) -> Bounds<Pixels> {
         let right = self.origin.x + self.cell_width * self.cols as f32;
         Bounds::new(
-            point(right - px(SCROLLBAR_W + SCROLLBAR_SLOP), self.origin.y),
-            gpui::size(px(SCROLLBAR_W + 2.0 * SCROLLBAR_SLOP), self.line_height * self.rows as f32),
+            point(right + px(SCROLLBAR_SLOP), self.origin.y),
+            gpui::size(px(SCROLLBAR_W), self.line_height * self.rows as f32),
         )
+    }
+
+    fn scrollbar_hot_zone(&self) -> Bounds<Pixels> {
+        let mut track = self.scrollbar_track();
+        track.origin.x -= px(SCROLLBAR_SLOP);
+        track.size.width += px(2.0 * SCROLLBAR_SLOP);
+        track
     }
 
     fn update_scrollbar_hover(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {

@@ -57,17 +57,22 @@ use keyboard_bindings::{
 mod details_panel;
 mod documents;
 mod file_tree;
+mod history;
 mod key_actions;
 mod launcher_menu;
 mod logos;
 mod notifications;
 mod palette;
 mod pane_header;
+mod projects;
 mod quick_jump;
 mod quick_terminal;
 mod recipes;
 mod remote_files;
 mod rename;
+mod review;
+mod task_inbox;
+mod workbench;
 #[cfg(test)]
 use rename::apply_cancel_rename;
 use rename::{PaneRename, TabRename, apply_commit_rename};
@@ -82,6 +87,7 @@ mod shell_picker;
 mod sidebar_resize;
 mod terminal_activity;
 use shell_picker::shell_palette_rows;
+mod project_tree;
 mod settings_navigation;
 mod sidebar;
 mod ssh_dialog;
@@ -94,6 +100,7 @@ use tab_presentation::TabPresentation;
 mod tab_scroll;
 mod top_tabs;
 mod update_dialog;
+mod usage;
 mod vcs_panel;
 mod window_titlebar;
 pub(crate) mod windowing;
@@ -419,6 +426,7 @@ const PALETTE_SCROLLBAR_CONTENT_GUTTER: f32 = 16.0;
 enum WorkspacePaletteAction {
     TerminalReading {
         commands: bool,
+        failed: bool,
     },
     Shared(crate::display::command_palette::PaletteAction),
     /// 聚焦已经存在的工作区标签，不创建副本。
@@ -434,6 +442,7 @@ enum WorkspacePaletteAction {
     RunAiSession {
         command: String,
         cwd: Option<std::path::PathBuf>,
+        resume: Option<(crate::ai_agents::AgentKind, String)>,
     },
     /// 启动器混排的 SSH 主机行（数据源 = 共享主机列表权威）。
     LaunchSshHost(String),
@@ -611,6 +620,13 @@ pub struct NebulaWorkspace {
     tabs: Vec<WorkspaceTab>,
     /// 与 `tabs` 同下标的用户元数据，见 [`TabMeta`]。
     tab_meta: Vec<TabMeta>,
+    projects: projects::ProjectState,
+    usage: usage::UsageState,
+    history: history::HistoryState,
+    task_inbox: task_inbox::TaskInbox,
+    review: review::ReviewBatch,
+    workbench: workbench::State,
+    pending_chat: Option<send_to_chat::PendingChat>,
     /// 正在行内重命名的标签，见 [`TabRename`]。
     tab_rename: Option<TabRename>,
     pane_rename: Option<PaneRename>,
@@ -767,6 +783,7 @@ pub struct NebulaWorkspace {
     /// 系统关闭按钮可能连续送来多次 should-close；确认框在场时只保留一份。
     window_close_confirm_open: bool,
     window_close_pending: bool,
+    pending_session_restore: Option<crate::session::Session>,
     /// `keep_session` 关窗后 HWND 已隐藏、PTY 仍在；托盘 / mux ATTACH 用来捞回。
     window_hidden: bool,
     /// 开窗时记下，mux `tab.new` 需要从 pump 拿到 `&mut Window`。
@@ -788,7 +805,8 @@ impl NebulaWorkspace {
     fn insert_new_tab(&mut self, tab: WorkspaceTab) {
         let position = nebula_settings::RuntimeSettings::load().new_tab_position;
         let at = new_tab_insert_index(position, self.active, self.tabs.len());
-        self.insert_tab_at(at, tab, TabMeta::default());
+        let project_root = self.new_tab_project();
+        self.insert_tab_at(at, tab, TabMeta { project_root, ..TabMeta::default() });
         self.active = at;
         self.reveal_active_tab();
     }
@@ -873,7 +891,7 @@ impl NebulaWorkspace {
                 workspace_ui_language().text(crate::i18n::Message::FilesFilterPlaceholder),
             )
         });
-        let git_commit_input = vcs_panel::CommitInput::new(window, cx);
+        let git_commit_input = Self::new_commit_input(window, cx);
         let command_palette_subscription = cx.subscribe_in(
             &command_palette_input,
             window,
@@ -902,6 +920,13 @@ impl NebulaWorkspace {
         let mut this = Self {
             tabs: Vec::new(),
             tab_meta: Vec::new(),
+            projects: projects::ProjectState::default(),
+            usage: usage::UsageState::default(),
+            history: history::HistoryState::default(),
+            task_inbox: task_inbox::TaskInbox::default(),
+            review: review::ReviewBatch::default(),
+            workbench: workbench::State::default(),
+            pending_chat: None,
             tab_rename: None,
             pane_rename: None,
             // 首窗仍从 1 起，保持既有 runtime/测试身份；后续窗口用高 32 位
@@ -992,6 +1017,7 @@ impl NebulaWorkspace {
             spinner_visible: std::cell::Cell::new(false),
             window_close_confirm_open: false,
             window_close_pending: false,
+            pending_session_restore: None,
             window_hidden: false,
             window_handle: window.window_handle(),
             runtime_window_id,
@@ -1137,23 +1163,6 @@ impl NebulaWorkspace {
         cx.notify();
     }
 
-    fn add_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 旧壳合同（window_context `spawn_tab` 一族）：新 tab 的 cwd 先取
-        // 设置页的「启动目录」（存在且是目录才算数），否则继承聚焦 pane
-        // 的 cwd——`startup_directory=` 因此在两壳有同一效果。WSL 来宾目录
-        // 见 `tab_duplication::CopyKind::NewTab`。
-        let (launch, cwd) = match Self::startup_directory() {
-            Some(dir) => (shell_launch::configured_local_launch(cx), Some(dir)),
-            None => self.new_tab_from_focused(cx),
-        };
-        self.add_terminal_with(launch, cwd, None, window, cx);
-    }
-
-    /// 设置页「启动目录」：非空且确实存在的目录才生效（旧壳同判定）。
-    fn startup_directory() -> Option<std::path::PathBuf> {
-        nebula_settings::RuntimeSettings::load().startup_directory_path()
-    }
-
     /// 创建一个 pane 实体（分配 id、spawn 会话、挂宿主订阅）；调用方决定
     /// 它进新 tab 还是接进某棵分屏树。
     fn new_pane(
@@ -1238,7 +1247,12 @@ impl NebulaWorkspace {
         self.insert_tab_at(
             at,
             tab,
-            TabMeta { shell_tag, launch: Some(launch_session), ..TabMeta::default() },
+            TabMeta {
+                project_root: self.new_tab_project(),
+                shell_tag,
+                launch: Some(launch_session),
+                ..TabMeta::default()
+            },
         );
         self.active = at;
         self.reveal_active_tab();
@@ -1300,6 +1314,7 @@ impl NebulaWorkspace {
             tab,
             TabMeta {
                 shell_tag: Some("ssh".into()),
+                project_root: self.new_tab_project(),
                 launch: Some(crate::session::LaunchSession::Ssh { host: destination }),
                 ..TabMeta::default()
             },
@@ -1641,6 +1656,9 @@ impl NebulaWorkspace {
     }
 
     fn finish_close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.retain_review_before_close(ix, window, cx) {
+            return;
+        }
         // Focus mode is scoped to the current document view. Closing any tab
         // must first restore workspace chrome so an old entity cannot leave the
         // next active tab in an immersive layout.
@@ -1657,7 +1675,9 @@ impl NebulaWorkspace {
         }
 
         if self.tabs.is_empty() {
-            if self.settings_tab_open {
+            if let Some(record) = self.review.retained.last() {
+                self.open_repository_review_queue(record.draft.location.clone(), window, cx);
+            } else if self.settings_tab_open {
                 self.open_settings(window, cx);
             } else {
                 self.close_empty_workspace(window, cx);
@@ -1668,6 +1688,7 @@ impl NebulaWorkspace {
             self.active -= 1;
         }
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        self.keep_active_in_project();
         if let Err(error) = windowing::save_current_window_session(
             self.runtime_window_id,
             self.snapshot_session(cx),
@@ -1687,6 +1708,7 @@ impl NebulaWorkspace {
             return;
         }
         self.leave_settings(window, cx);
+        self.prepare_workbench_activation(ix, window, cx);
         if ix < self.tabs.len() && ix != self.active {
             self.clear_reader_focus(cx);
             self.active = ix;
@@ -1784,27 +1806,6 @@ impl NebulaWorkspace {
         (self.active_local_cwd(cx), None)
     }
 
-    /// 让窗口级共享文件树立即绑定当前 active tab / focused pane。切 pane/tab
-    /// 时清掉树内手动浏览根；普通 OSC 7 轮询只在 cwd 真变化时由模型自动清掉。
-    fn sync_side_panel_to_active(
-        &mut self,
-        reset_browse_root: bool,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.side_panel.open {
-            return false;
-        }
-        // SSH cwd reports drive SFTP browsing; remote paths must stay out of the
-        // local filesystem model. Bind first so pane switches use the new owner.
-        let remote_changed = self.sync_remote_browser_to_active(cx);
-        if self.remote_browser.active() {
-            return remote_changed;
-        }
-        let (cwd, wsl) = self.side_panel_follow(cx);
-        let cleared = reset_browse_root && self.side_panel.clear_custom_root();
-        self.side_panel.sync_at(cwd, wsl) || cleared || remote_changed
-    }
-
     fn toggle_file_tree(&mut self, cx: &mut Context<Self>) {
         if self.active_document_section(cx).is_some() {
             self.details_panel.section = None;
@@ -1878,6 +1879,7 @@ impl NebulaWorkspace {
     }
 
     fn dismiss_palette_state(&mut self) {
+        self.history.dismiss();
         self.launcher_menu = None;
         self.command_palette_open = false;
         self.palette_override = None;
@@ -1914,24 +1916,9 @@ impl NebulaWorkspace {
         cx.notify();
     }
 
-    fn open_quick_jump_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.command_manager_open = false;
-        self.shell_picker_open = false;
-        self.launcher_filter = crate::display::command_palette::LauncherFilter::All;
-        self.quick_jump_filter = Some(QuickJumpFilter::All);
-        self.palette_override = Some(quick_jump::rows(self, cx));
-        self.command_palette_open = true;
-        self.command_palette_selected = 0;
-        self.reset_palette_query(
-            QuickJumpFilter::All.placeholder(workspace_ui_language()),
-            window,
-            cx,
-        );
-        cx.notify();
-    }
-
     /// 三点 / Ctrl+K：旧壳 `NewTabMenu` → `open_shell_menu` → `PaletteMode::Profiles`。
     fn open_shell_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_palette_state();
         self.command_manager_open = false;
         let default_shell_id = crate::platform::shell::effective_shell_id(
             cx.try_global::<crate::gpui_shell::config::Settings>()
@@ -2083,7 +2070,7 @@ impl NebulaWorkspace {
         use crate::display::command_palette::PaletteAction;
 
         if action == PaletteAction::OpenAiSessionPicker {
-            self.open_quick_jump_palette(window, cx);
+            self.open_ai_history(window, cx);
             return;
         }
         self.dismiss_palette_state();
@@ -2186,8 +2173,7 @@ impl NebulaWorkspace {
         }
         self.file_tree_menu = None;
         self.side_panel.toggle(view);
-        let (cwd, wsl) = self.side_panel_follow(cx);
-        self.side_panel.sync_at(cwd, wsl);
+        self.sync_side_panel_to_active(false, cx);
         cx.notify();
     }
 
@@ -2323,6 +2309,7 @@ impl NebulaWorkspace {
                 .size_full()
                 .children(header)
                 .child(div().flex_1().min_h_0().relative().children(probe).children(view))
+                .children(pane.and_then(|pane| self.render_session_metrics(&pane.view, cx)))
                 .into_any_element();
         }
         let mut path = Vec::new();
@@ -2425,6 +2412,7 @@ impl NebulaWorkspace {
                                 |pane| pane.child(veil),
                             ),
                     )
+                    .children(pane.and_then(|pane| self.render_session_metrics(&pane.view, cx)))
                     .into_any_element()
             },
             SplitTree::Split { direction, ratio, dragging, first, second, .. } => {

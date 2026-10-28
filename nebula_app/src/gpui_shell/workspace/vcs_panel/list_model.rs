@@ -13,8 +13,11 @@ pub(super) enum RowOps {
 #[derive(Clone)]
 pub(super) enum VcsRow {
     Heading {
+        section_id: &'static str,
         message: Option<Message>,
         count: usize,
+        ops: RowOps,
+        collapsed: bool,
     },
     Empty(Message),
     History {
@@ -37,6 +40,7 @@ pub(in crate::gpui_shell::workspace) struct VcsList {
     pub(super) rendered: Vec<usize>,
     view: Option<GitPanelView>,
     root: Option<PathBuf>,
+    collapsed: std::collections::HashSet<&'static str>,
     rows: Vec<VcsRow>,
     lane_layout: (f32, f32),
     pub(super) scroll: gpui::ListState,
@@ -50,6 +54,7 @@ impl Default for VcsList {
             rendered: Vec::new(),
             view: None,
             root: None,
+            collapsed: Default::default(),
             rows: Vec::new(),
             lane_layout: (0.0, 0.0),
             scroll: gpui::ListState::new(0, gpui::ListAlignment::Top, px(34.0)),
@@ -76,6 +81,21 @@ impl VcsList {
         self.snapshot = snapshot;
         self.view = Some(view);
         self.root = root;
+        if !same_location {
+            self.collapsed.clear();
+        }
+        self.rebuild(same_location);
+    }
+
+    pub(super) fn toggle_section(&mut self, section_id: &'static str) {
+        if !self.collapsed.remove(section_id) {
+            self.collapsed.insert(section_id);
+        }
+        self.rebuild(true);
+    }
+
+    fn rebuild(&mut self, same_location: bool) {
+        let Some(view) = self.view else { return };
         self.rows.clear();
         if let Some(info) = self.snapshot.as_ref() {
             if info.vcs == VcsKind::Git && view == GitPanelView::History {
@@ -110,8 +130,17 @@ impl VcsList {
                             })
                             .collect();
                         if !changes.is_empty() {
-                            self.rows.push(VcsRow::Heading { message, count: changes.len() });
-                            self.rows.extend(changes);
+                            let collapsed = self.collapsed.contains(id);
+                            self.rows.push(VcsRow::Heading {
+                                section_id: id,
+                                message,
+                                count: changes.len(),
+                                ops,
+                                collapsed,
+                            });
+                            if !collapsed {
+                                self.rows.extend(changes);
+                            }
                         }
                     };
                 let is_git = info.vcs == VcsKind::Git;

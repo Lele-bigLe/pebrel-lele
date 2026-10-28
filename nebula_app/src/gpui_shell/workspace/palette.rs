@@ -37,13 +37,17 @@ impl NebulaWorkspace {
         cx: &mut Context<Self>,
     ) {
         match action {
-            WorkspacePaletteAction::TerminalReading { commands } => {
+            WorkspacePaletteAction::TerminalReading { commands, failed } => {
                 self.dismiss_palette_state();
                 if let Some(view) =
                     self.tabs.get(self.active).and_then(WorkspaceTab::focused_view).cloned()
                 {
                     view.update(cx, |view, cx| {
-                        view.open_reading(commands, window, cx);
+                        if failed {
+                            view.open_failed_reading(window, cx);
+                        } else {
+                            view.open_reading(commands, window, cx);
+                        }
                     });
                 }
                 cx.notify();
@@ -70,9 +74,32 @@ impl NebulaWorkspace {
                 self.dismiss_palette_state();
                 self.add_terminal_at(Some(path), None, window, cx);
             },
-            WorkspacePaletteAction::RunAiSession { command, cwd } => {
+            WorkspacePaletteAction::RunAiSession { command, cwd, resume } => {
+                if let Some((source, id)) = &resume
+                    && self.focus_open_agent(*source, id, window, cx)
+                {
+                    return;
+                }
+                if self.history.active && cwd.is_none() {
+                    window.push_notification(
+                        Notification::error(
+                            crate::gpui_shell::config::ui_language(cx)
+                                .text(crate::i18n::Message::HistoryDirectoryUnavailable),
+                        ),
+                        cx,
+                    );
+                    return;
+                }
+                if self.history.active {
+                    self.projects.filter = self
+                        .history_resume_project(cwd.as_ref())
+                        .map_or(projects::ProjectFilter::Ungrouped, projects::ProjectFilter::Root);
+                }
                 self.dismiss_palette_state();
-                self.add_terminal_at(cwd, Some(command), window, cx);
+                let pane = self.add_terminal_at(cwd, Some(command), window, cx);
+                if let Some((source, id)) = resume {
+                    self.reserve_agent_resume(source, id, pane);
+                }
             },
             WorkspacePaletteAction::LaunchSshHost(host) => {
                 self.dismiss_palette_state();
@@ -143,62 +170,71 @@ impl NebulaWorkspace {
             .and_then(WorkspaceTab::focused_view)
             .is_some_and(|view| view.read(cx).working_directory().is_some());
         let language = crate::gpui_shell::config::ui_language(cx);
-        let rows = self.palette_override.clone().unwrap_or_else(|| {
-            let mut rows: Vec<WorkspacePaletteRow> = crate::display::command_palette::catalog()
-                .iter()
-                .filter(|item| Self::palette_action_available(&item.action, has_local_cwd, has_cwd))
-                .map(|item| {
-                    let (group_order, group) =
-                        crate::display::command_palette::command_group_metadata(
-                            &item.action,
-                            language,
-                            has_local_cwd,
-                            false,
-                        );
-                    WorkspacePaletteRow {
-                        group_order,
-                        group,
-                        label: item.label.to_owned(),
-                        hint: item.hint.to_owned(),
-                        hint_style: WorkspacePaletteHintStyle::Shortcut,
-                        search: item.search.to_owned(),
-                        action: WorkspacePaletteAction::Shared(item.action.clone()),
-                        icon: None,
-                        icon_glyph: None,
-                        icon_path: None,
+        let rows = if self.history.active {
+            self.history_palette_rows(language)
+        } else {
+            self.palette_override.clone().unwrap_or_else(|| {
+                let mut rows: Vec<WorkspacePaletteRow> = crate::display::command_palette::catalog()
+                    .iter()
+                    .filter(|item| {
+                        Self::palette_action_available(&item.action, has_local_cwd, has_cwd)
+                    })
+                    .map(|item| {
+                        let (group_order, group) =
+                            crate::display::command_palette::command_group_metadata(
+                                &item.action,
+                                language,
+                                has_local_cwd,
+                                false,
+                            );
+                        WorkspacePaletteRow {
+                            group_order,
+                            group,
+                            label: item.label.to_owned(),
+                            hint: item.hint.to_owned(),
+                            hint_style: WorkspacePaletteHintStyle::Shortcut,
+                            search: item.search.to_owned(),
+                            action: WorkspacePaletteAction::Shared(item.action.clone()),
+                            icon: None,
+                            icon_glyph: None,
+                            icon_path: None,
+                        }
+                    })
+                    .collect();
+                rows.push(recipes::palette_row(language));
+                if self.tabs.get(self.active).and_then(WorkspaceTab::focused_view).is_some() {
+                    for (commands, failed, message) in [
+                        (false, false, crate::i18n::Message::TerminalReadingOpen),
+                        (true, false, crate::i18n::Message::TerminalReadingChoose),
+                        (true, true, crate::i18n::Message::TerminalReadingFailures),
+                    ] {
+                        let label = language.text(message).to_owned();
+                        rows.push(WorkspacePaletteRow {
+                            group_order: 0,
+                            group: language
+                                .text(crate::i18n::Message::TerminalReadingOpen)
+                                .to_owned(),
+                            search: format!("{label} terminal search find copy output shell"),
+                            label,
+                            hint: String::new(),
+                            hint_style: WorkspacePaletteHintStyle::Metadata,
+                            action: WorkspacePaletteAction::TerminalReading { commands, failed },
+                            icon: None,
+                            icon_glyph: None,
+                            icon_path: None,
+                        });
                     }
-                })
-                .collect();
-            rows.push(recipes::palette_row(language));
-            if self.tabs.get(self.active).and_then(WorkspaceTab::focused_view).is_some() {
-                for (commands, message) in [
-                    (false, crate::i18n::Message::TerminalReadingOpen),
-                    (true, crate::i18n::Message::TerminalReadingChoose),
-                ] {
-                    let label = language.text(message).to_owned();
-                    rows.push(WorkspacePaletteRow {
-                        group_order: 0,
-                        group: language.text(crate::i18n::Message::TerminalReadingOpen).to_owned(),
-                        search: format!("{label} terminal search find copy output shell"),
-                        label,
-                        hint: String::new(),
-                        hint_style: WorkspacePaletteHintStyle::Metadata,
-                        action: WorkspacePaletteAction::TerminalReading { commands },
-                        icon: None,
-                        icon_glyph: None,
-                        icon_path: None,
-                    });
                 }
-            }
-            // 启动器混排（旧壳 ⌘K 裁定）：SSH 主机与命令同列，置顶/隐藏
-            // 次序由共享 merge 权威裁定。
-            rows.extend(shell_picker::ssh_palette_rows(
-                &crate::gpui_shell::ssh_hosts::SshHostLists::load(),
-                usize::MAX,
-                language.pick("SSH 主机", "SSH HOSTS"),
-            ));
-            rows
-        });
+                // 启动器混排（旧壳 ⌘K 裁定）：SSH 主机与命令同列，置顶/隐藏
+                // 次序由共享 merge 权威裁定。
+                rows.extend(shell_picker::ssh_palette_rows(
+                    &crate::gpui_shell::ssh_hosts::SshHostLists::load(),
+                    usize::MAX,
+                    language.pick("SSH 主机", "SSH HOSTS"),
+                ));
+                rows
+            })
+        };
         let mut rows: Vec<_> = rows
             .into_iter()
             .filter(|row| {
@@ -300,7 +336,8 @@ impl NebulaWorkspace {
         let results_height = f32::from(window.viewport_size().height).min(PALETTE_PANEL_HEIGHT)
             - 2.0
             - PALETTE_SEARCH_HEIGHT
-            - if has_filter_bar { PALETTE_FILTER_BAR_HEIGHT } else { 0.0 };
+            - if has_filter_bar { PALETTE_FILTER_BAR_HEIGHT } else { 0.0 }
+            - if self.history.active { 44.0 } else { 0.0 };
         let results_scrollable = content_height > results_height;
         // 同一份 picker 只要有一行带图标，就为全部行保留固定 icon rail；常规
         // 命令目录没有图标时整列消失，不会凭空多出一层缩进。
@@ -475,6 +512,21 @@ impl NebulaWorkspace {
                         .child(item.label),
                 )
                 .when_some(hint, |row, hint| row.child(hint))
+                .when(self.history.active, |row| {
+                    row.child(
+                        Button::new(SharedString::from(format!("history-preview-{ix}")))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Eye)
+                            .aria_label(language.text(crate::i18n::Message::HistoryDetailsPreview))
+                            .tooltip(language.text(crate::i18n::Message::HistoryDetailsPreview))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.command_palette_selected = ix;
+                                this.open_history_details(window, cx);
+                            })),
+                    )
+                })
                 .when_some(context_target, |row, target| {
                     row.on_mouse_down(
                         MouseButton::Right,
@@ -507,11 +559,11 @@ impl NebulaWorkspace {
                     .gap(px(space::XS))
                     .text_color(muted)
                     .child(Icon::new(IconName::Search).small())
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .child(language.pick("没有匹配结果", "No matching results")),
-                    )
+                    .child(div().text_size(px(12.0)).child(if self.history.active {
+                        self.history_empty_label(language)
+                    } else {
+                        language.pick("没有匹配结果", "No matching results").to_owned()
+                    }))
                     .into_any_element(),
             );
         }
@@ -621,6 +673,7 @@ impl NebulaWorkspace {
         });
 
         let scroll_handle = self.command_palette_scroll.clone();
+        let history_controls = self.history.active.then(|| self.render_history_controls(cx));
         let result_list = v_flex()
             .id("workspace-palette-results-scroll")
             .size_full()
@@ -630,16 +683,21 @@ impl NebulaWorkspace {
             .overflow_y_scroll()
             .track_scroll(&scroll_handle)
             .children(rows);
-        let results =
-            div().relative().flex_1().min_h_0().overflow_hidden().child(result_list).when(
-                results_scrollable,
-                |results| {
-                    results.child(
-                        gpui_component::scroll::Scrollbar::vertical(&scroll_handle)
-                            .scrollbar_show(gpui_component::scroll::ScrollbarShow::Always),
-                    )
-                },
-            );
+        let results = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .when(results_scrollable, |results| {
+                results.pr(px(crate::gpui_shell::widgets::SCROLLBAR_GUTTER))
+            })
+            .child(result_list)
+            .when(results_scrollable, |results| {
+                results.child(crate::gpui_shell::widgets::scrollbar_gutter(
+                    gpui_component::scroll::Scrollbar::vertical(&scroll_handle)
+                        .scrollbar_show(gpui_component::scroll::ScrollbarShow::Always),
+                ))
+            });
 
         div()
             .absolute()
@@ -694,6 +752,7 @@ impl NebulaWorkspace {
                     )
                     .child(search_box)
                     .children(filter_bar)
+                    .children(history_controls)
                     .child(results),
             )
             .into_any_element()

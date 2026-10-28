@@ -432,13 +432,13 @@ fn agent_start_exposes_only_verified_launch_contracts() {
             session_id: None,
             ref command,
             ..
-        }) if command == "codex"
+        }) if command == "codex --no-daemon"
     ));
 
     let unsupported = ApiRequest::new(
         "token".into(),
         "agent.start",
-        json!({ "name": "reviewer", "kind": "gemini" }),
+        json!({ "name": "reviewer", "kind": "aider" }),
     );
     assert_eq!(
         RuntimeCommand::from_request(&unsupported).unwrap_err().code,

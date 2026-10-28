@@ -130,7 +130,7 @@ impl NebulaWorkspace {
     }
 
     fn tabs_window(&self) -> TabsWindow {
-        let want = self.tabs.len();
+        let want = self.sidebar_tab_indices().len();
         let show = visible_count(
             want,
             self.tabs_viewport_h,
@@ -148,6 +148,9 @@ impl NebulaWorkspace {
     }
 
     pub(super) fn clamp_tabs_scroll(&mut self) {
+        if self.sidebar_tab_indices().is_empty() {
+            self.projects.filter = super::projects::ProjectFilter::All;
+        }
         let max = self.tabs_window().max;
         let next = clamp_scroll(self.tabs_scroll, max);
         if next != self.tabs_scroll {
@@ -156,8 +159,25 @@ impl NebulaWorkspace {
     }
 
     pub(super) fn reveal_active_tab(&mut self) {
+        self.reveal_active_project();
+        if matches!(self.projects.filter, super::projects::ProjectFilter::Root(_)) {
+            let mut indices = self.sidebar_tab_indices();
+            indices.sort_by_key(|&index| !self.tabs[index].is_terminal());
+            if self.tabs.get(self.active).is_some_and(|tab| !tab.is_terminal()) {
+                self.projects.documents_collapsed = false;
+            }
+            if let Some(position) = indices
+                .iter()
+                .filter(|&&index| !self.tabs_section_collapsed || !self.tabs[index].is_terminal())
+                .position(|&index| index == self.active)
+            {
+                self.projects.session_scroll.scroll_to_item(position);
+            }
+        }
         let window = self.tabs_window();
-        let next = reveal_index(self.active, window.scroll, window.show);
+        let index =
+            self.sidebar_tab_indices().iter().position(|&ix| ix == self.active).unwrap_or(0);
+        let next = reveal_index(index, window.scroll, window.show);
         self.tabs_scroll = clamp_scroll(next, window.max);
         self.top_tabs_scroll.scroll_to_item(if self.settings_open {
             self.tabs.len()

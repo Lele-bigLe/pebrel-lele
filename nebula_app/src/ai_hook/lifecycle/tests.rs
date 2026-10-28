@@ -178,7 +178,8 @@ fn local_mode_command_keeps_activity_and_real_prompts_keep_the_submission_barrie
         activity.submitted_text("codex", "/plan");
         assert_eq!(activity.status(), AgentStatus::Working, "a mode switch cannot finish work");
     }
-    for (program, text) in [("claude", "/plan"), ("codex", "/review"), ("codex", "/plan\nmy task")]
+    for (program, text) in
+        [("claude", "/plan my task"), ("codex", "/review"), ("codex", "/plan\nmy task")]
     {
         let mut activity = AgentActivity::default();
         activity.submitted_text(program, text);

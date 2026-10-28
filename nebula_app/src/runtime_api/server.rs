@@ -9,15 +9,26 @@ pub(super) struct Endpoint {
 }
 
 pub(crate) const ENDPOINT_ENV: &str = "PEBREL_RUNTIME_ENDPOINT";
-static CHILD_ENDPOINT: Mutex<Option<Endpoint>> = Mutex::new(None);
+const RESIDENT_ENDPOINT: &str = "resident";
 
-/// Private instances publish discovery only to their own local PTY children.
+struct HostedEndpoint {
+    endpoint: Endpoint,
+    shared_discovery: bool,
+}
+
+static CHILD_ENDPOINT: Mutex<Option<HostedEndpoint>> = Mutex::new(None);
+
+/// Resident children rediscover after restart; private children keep their explicit pin.
 pub(crate) fn apply_child_endpoint(env: &mut std::collections::HashMap<String, String>) {
     env.retain(|key, _| !key.eq_ignore_ascii_case(ENDPOINT_ENV));
-    if let Some(endpoint) =
-        CHILD_ENDPOINT.lock().unwrap_or_else(|error| error.into_inner()).as_ref()
+    if let Some(hosted) = CHILD_ENDPOINT.lock().unwrap_or_else(|error| error.into_inner()).as_ref()
     {
-        env.insert(ENDPOINT_ENV.to_owned(), format!("{} {}", endpoint.port, endpoint.token));
+        let value = if hosted.shared_discovery {
+            RESIDENT_ENDPOINT.to_owned()
+        } else {
+            format!("{} {}", hosted.endpoint.port, hosted.endpoint.token)
+        };
+        env.insert(ENDPOINT_ENV.to_owned(), value);
     }
 }
 
@@ -42,13 +53,16 @@ fn legacy_port_file() -> PathBuf {
 pub(super) fn read_endpoint() -> Option<Endpoint> {
     // A hosted instance owns its endpoint even when launched from another
     // Pebrel terminal. Child CLI processes have no server and use the env below.
-    if let Some(endpoint) = CHILD_ENDPOINT.lock().unwrap_or_else(|error| error.into_inner()).clone()
+    if let Some(hosted) = CHILD_ENDPOINT.lock().unwrap_or_else(|error| error.into_inner()).as_ref()
     {
-        return Some(endpoint);
+        return Some(hosted.endpoint.clone());
     }
     if let Some(value) = std::env::var_os(ENDPOINT_ENV) {
-        // An invalid explicit endpoint must not silently select another instance.
-        return value.to_str().and_then(parse_endpoint);
+        let value = value.to_str()?;
+        if value != RESIDENT_ENDPOINT {
+            // An invalid explicit endpoint must not silently select another instance.
+            return parse_endpoint(value);
+        }
     }
     read_endpoint_from(port_file())
 }
@@ -142,7 +156,11 @@ fn try_open_tab_existing(dir: Option<&std::path::Path>, shell: Option<&str>) -> 
 }
 
 fn legacy_request(verb: &str) -> Option<()> {
-    let local = CHILD_ENDPOINT.lock().unwrap_or_else(|error| error.into_inner()).clone();
+    let local = CHILD_ENDPOINT
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map(|hosted| hosted.endpoint.clone());
     if let Some(endpoint) = local {
         return legacy_request_to(verb, &endpoint);
     }
@@ -239,7 +257,10 @@ impl RuntimeServer {
             .is_ok();
         if spawned {
             *CHILD_ENDPOINT.lock().unwrap_or_else(|error| error.into_inner()) =
-                Some(endpoint.clone());
+                Some(HostedEndpoint {
+                    endpoint: endpoint.clone(),
+                    shared_discovery: path.is_some(),
+                });
             Some(Self { endpoint, port_file: path, _owner_lock: owner_lock })
         } else {
             if let Some(path) = path {
@@ -259,7 +280,7 @@ impl Drop for RuntimeServer {
             let _ = std::fs::remove_file(path);
         }
         let mut child = CHILD_ENDPOINT.lock().unwrap_or_else(|error| error.into_inner());
-        if child.as_ref() == Some(&self.endpoint) {
+        if child.as_ref().is_some_and(|hosted| hosted.endpoint == self.endpoint) {
             *child = None;
         }
     }

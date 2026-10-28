@@ -104,6 +104,7 @@ impl NebulaWorkspace {
         );
         let source_view =
             panes.iter().find(|pane| pane.id == pane_id).map(|pane| pane.view.clone());
+        self.record_task_notification(pane_id, &notification, visible, cx);
         if !visible && let Some(meta) = self.tab_meta.get_mut(tab_index) {
             meta.has_bell = true;
         }

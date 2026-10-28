@@ -72,6 +72,7 @@ impl WindowContext {
         tab.layout.leaves(&mut leaves);
         session::TabSession {
             cwd: pane_cwd(tab.active_pane),
+            project_root: None,
             custom_name: tab.custom_name.clone(),
             color: tab.custom_color,
             launch: Some(Self::launch_session(&tab.launch)),

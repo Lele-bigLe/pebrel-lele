@@ -179,6 +179,7 @@ impl NebulaWorkspace {
         });
         let duplicate = TabSession {
             cwd: String::new(),
+            project_root: meta.project_root,
             custom_name: meta.custom_name,
             color: meta.color,
             launch: meta.launch,
@@ -190,7 +191,7 @@ impl NebulaWorkspace {
         }
         let position = nebula_settings::RuntimeSettings::load().new_tab_position;
         let at = new_tab_insert_index(position, self.active, self.tabs.len());
-        if self.restore_tab_at(&duplicate, false, at, window, cx) {
+        if self.restore_tab_at(&duplicate, false, at, &[], window, cx) {
             self.active = at;
             self.reveal_active_tab();
             self.focus_active(window, cx);

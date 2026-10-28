@@ -636,6 +636,7 @@ impl SettingsPane {
             launch_at_login: crate::platform::startup::launch_at_login(),
             active_section: 1,
             agents: agents::AgentSettingsState::new(cx),
+            codex_usage: codex_usage::State::new(cx),
             mobile: mobile::MobileState::new(window, cx),
             appearance_picker: None,
             appearance_picker_seq: 0,

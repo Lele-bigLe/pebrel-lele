@@ -16,7 +16,11 @@ impl Render for NebulaWorkspace {
         // 「各写一份」，主题在这一帧中途换掉就会出现半旧半新的卡缝。
         let card_style = crate::gpui_shell::theme::PaneCardStyle::current(cx);
         let titlebar_background = self.titlebar_background.clone();
-        let draw_file_divider = self.side_panel.open;
+        self.sync_project_explorer(cx);
+        // Clear stale reader focus before deriving workbench/layout visibility.
+        self.clear_stale_reader_focus(cx);
+        self.sync_workbench_route(window, cx);
+        let draw_file_divider = self.right_sidebar_visible(cx);
         let sidebar_logo_target_px =
             (TAB_LABEL_ICON_SIZE * window.scale_factor()).round().max(1.0) as u32;
         if let Some(images) = logos::poll_sidebar_logo_images(self, sidebar_logo_target_px, cx) {
@@ -25,11 +29,9 @@ impl Render for NebulaWorkspace {
             self.sidebar_logo_images = images;
             self.sidebar_logo_target_px = sidebar_logo_target_px;
         }
-        // Some tab-open/restore paths assign `active` directly. Clear a focus
-        // record tied to a different entity before deriving layout booleans.
-        self.clear_stale_reader_focus(cx);
         self.sync_document_activity(window, cx);
         self.sync_terminal_activity(cx);
+        self.mark_visible_task_read(window, cx);
         self.sync_document_details(cx);
         if !self.sidebar_collapsed {
             self.sidebar_closing_width = None;
@@ -38,6 +40,18 @@ impl Render for NebulaWorkspace {
             self.settings_surface
                 .as_ref()
                 .map(|(view, _)| gpui::IntoElement::into_any_element(view.clone()))
+        } else if self.workbench_empty_review(cx) {
+            Some(
+                div()
+                    .p_6()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        crate::gpui_shell::config::ui_language(cx)
+                            .text(crate::i18n::Message::WorkbenchChooseFile),
+                    )
+                    .into_any_element(),
+            )
         } else {
             match self.tabs.get(self.active) {
                 Some(WorkspaceTab::Terminal { .. }) => {
@@ -59,6 +73,7 @@ impl Render for NebulaWorkspace {
             }
         };
         let settings_active = self.settings_open;
+        let workbench_header = self.render_workbench_header(cx);
         let top_tabs = self.tabs_position == nebula_settings::TabsPositionName::Top;
         let reader_focus = self.reader_focus_active(cx);
         // dock 预览：被拖 tab 悬于终端区时高亮目标半区（松手即挂到那侧）。
@@ -332,7 +347,9 @@ impl Render for NebulaWorkspace {
                                     // 窗口底层统一绘图，此处不覆盖原有衬底。
                                     crate::gpui_shell::wallpaper::card_layer(cx),
                                 )
-                                .children(content),
+                                .child(v_flex().size_full().min_h_0()
+                                    .children(workbench_header)
+                                    .child(div().flex_1().min_h_0().children(content))),
                         )
                             .child(
                                 // Both sidebar boundaries share the same snapped line and color.
@@ -352,6 +369,13 @@ impl Render for NebulaWorkspace {
                         row.child(self.render_side_panel_slot(window, cx))
                     }),
             )
+            .children(self.render_pending_chat(cx))
+            .when(!reader_focus && (top_tabs || self.sidebar_collapsed), |root| {
+                root.child(h_flex().w_full().flex_shrink_0().px_2().gap_1()
+                    .child(self.render_history_button(cx))
+                    .child(self.render_task_button(cx))
+                    .child(self.render_usage_toolbar_button(cx)))
+            })
             .when_some(dock_preview, |root, (x, y, w, h)| {
                 root.child(
                     div()
@@ -427,6 +451,8 @@ impl Render for NebulaWorkspace {
             .when(self.command_manager_open, |root| {
                 root.child(self.render_command_manager(window, cx))
             })
+            .children(self.render_usage_panel(window, cx))
+            .children(self.render_task_inbox(window, cx))
             .when_some(self.render_file_tree_context_menu(), |root, menu| {
                 root.child(menu)
             })

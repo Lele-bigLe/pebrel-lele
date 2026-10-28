@@ -18,10 +18,8 @@ use std::time::Duration;
 use sha2::{Digest as _, Sha256};
 
 use crate::i18n::{Message, UiLanguage};
-use crate::update_check::UpdateAsset;
+use crate::update_check::{RELEASE_DOWNLOAD_PREFIX, UpdateAsset};
 
-const RELEASE_DOWNLOAD_PREFIX: &str = "https://github.com/Kuddev/pebrel/releases/download/";
-const LEGACY_RELEASE_DOWNLOAD_PREFIX: &str = "https://github.com/Kuddev/nebula/releases/download/";
 const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
 const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 
@@ -454,9 +452,8 @@ fn validate_asset_contract(asset: &UpdateAsset, names: &[String]) -> Result<(), 
     if !names.contains(&asset.name) {
         return Err("release 资产不是当前平台的精确安装包".to_owned());
     }
-    let trusted_url = [RELEASE_DOWNLOAD_PREFIX, LEGACY_RELEASE_DOWNLOAD_PREFIX]
-        .iter()
-        .any(|prefix| asset.download_url == format!("{prefix}v{}/{}", asset.version, asset.name));
+    let trusted_url =
+        asset.download_url == format!("{RELEASE_DOWNLOAD_PREFIX}v{}/{}", asset.version, asset.name);
     if !trusted_url {
         return Err("release 安装包 URL 不属于 Pebrel 官方仓库".to_owned());
     }
@@ -477,9 +474,11 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        LEGACY_RELEASE_DOWNLOAD_PREFIX, MAX_INSTALLER_BYTES, RELEASE_DOWNLOAD_PREFIX, UpdateAsset,
-        validate_windows_asset_contract, verify_download,
+        MAX_INSTALLER_BYTES, RELEASE_DOWNLOAD_PREFIX, UpdateAsset, validate_windows_asset_contract,
+        verify_download,
     };
+    const LEGACY_RELEASE_DOWNLOAD_PREFIX: &str =
+        "https://github.com/Kuddev/nebula/releases/download/";
 
     #[test]
     fn cancel_then_retry_rejects_old_progress_and_old_completion() {
@@ -660,14 +659,14 @@ mod tests {
 
     #[test]
     fn accepts_exact_official_asset_contract() {
-        let url = "https://github.com/Kuddev/nebula/releases/download/v1.4.0/NebulaTerminal-1.4.0-windows-x64-setup.exe";
+        let url = "https://github.com/Lele-bigLe/pebrel-lele/releases/download/v1.4.0/NebulaTerminal-1.4.0-windows-x64-setup.exe";
         let hash = "a".repeat(64);
         assert!(validate_windows_asset_contract(&asset(url, Some(hash.as_str()))).is_ok());
     }
 
     #[test]
     fn rejects_untrusted_url_or_missing_digest() {
-        let official = "https://github.com/Kuddev/nebula/releases/download/v1.4.0/NebulaTerminal-1.4.0-windows-x64-setup.exe";
+        let official = "https://github.com/Lele-bigLe/pebrel-lele/releases/download/v1.4.0/NebulaTerminal-1.4.0-windows-x64-setup.exe";
         let untrusted = "https://example.invalid/NebulaTerminal-1.4.0-windows-x64-setup.exe";
         let hash = "a".repeat(64);
 
@@ -694,14 +693,14 @@ mod tests {
             let mut legacy_url = original.clone();
             legacy_url.download_url =
                 format!("{LEGACY_RELEASE_DOWNLOAD_PREFIX}v{}/{}", original.version, original.name);
-            assert!(validate_windows_asset_contract(&legacy_url).is_ok());
+            assert!(validate_windows_asset_contract(&legacy_url).is_err());
             for url in [
                 original.download_url.replace("/v1.6.0/", "/v1.5.0/"),
                 original.download_url.replace("/v1.6.0/", "/v1.6.0/extra/"),
                 original.download_url.replace("github.com/", "github.com.evil.invalid/"),
                 original.download_url.replace("https://", "http://"),
                 format!("{}?download=1", original.download_url),
-                original.download_url.replace("Kuddev/pebrel/", "elsewhere/pebrel/"),
+                original.download_url.replace("Lele-bigLe/pebrel-lele/", "elsewhere/pebrel-lele/"),
             ] {
                 let mut candidate = original.clone();
                 candidate.download_url = url;

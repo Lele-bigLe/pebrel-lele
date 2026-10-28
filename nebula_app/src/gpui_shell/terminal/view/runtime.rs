@@ -658,16 +658,7 @@ impl TerminalView {
         }
         self.write_input(bytes, cx);
         if submit {
-            // 极短命令可能在 120ms runtime pump 的两拍之间完成。提交动作
-            // 本身先建立 Running 边沿，保证 prompt --wait 的 after_seq 不会
-            // 仍盯着提交前 Idle；真实 shell/hook 结束事件负责把它归位。
-            self.awaiting_input = false;
-            self.mark_command_running();
-            if let Some(agent) = agent {
-                self.agent_activity.submitted_text(&agent.kind, &text);
-            }
-            cx.emit(TerminalViewEvent::TitleChanged);
-            cx.notify();
+            self.record_runtime_submission(agent.as_ref(), &text, cx);
         }
         Ok(())
     }
@@ -799,15 +790,35 @@ impl TerminalView {
             self.paste_now_impl(&text, false, cx);
         }
         if submit {
-            self.awaiting_input = false;
-            self.mark_command_running();
-            if let Some(agent) = agent {
-                self.agent_activity.submitted_text(&agent.kind, &text);
-            }
-            cx.emit(TerminalViewEvent::TitleChanged);
-            cx.notify();
+            self.record_runtime_submission(agent.as_ref(), &text, cx);
         }
         Ok(())
+    }
+
+    fn record_runtime_submission(
+        &mut self,
+        agent: Option<&crate::runtime_api::RuntimeAgent>,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.awaiting_input = false;
+        let live_agent = self.runtime_chat_agent();
+        let control = live_agent.as_ref().is_some_and(|agent| {
+            crate::ai_hook::lifecycle::is_session_control_command(&agent.kind, text)
+        });
+        // Real work establishes Running before the next runtime pump; opening
+        // a menu must not await a completion hook that will never arrive.
+        if !control {
+            self.mark_command_running();
+        }
+        if let Some(agent) = agent {
+            self.agent_activity.submitted_text(&agent.kind, text);
+        }
+        if live_agent.is_some() {
+            crate::display::nebula_clear_line(&mut self.suggest);
+        }
+        cx.emit(TerminalViewEvent::TitleChanged);
+        cx.notify();
     }
 
     pub fn ai_fork_command(&self) -> Option<String> {
@@ -826,7 +837,7 @@ impl TerminalView {
         // without any native target must finish identifying before safe exit.
         self.ai_session_probe_pending
             || self.session_agent().is_some_and(|agent| {
-                matches!(agent.source.as_str(), "pi" | "codex")
+                matches!(agent.source.as_str(), "pi" | "codex" | "claude")
                     && agent.session_id.as_deref().is_none_or(str::is_empty)
             })
     }
@@ -835,6 +846,10 @@ impl TerminalView {
     /// File and process operations run on the background executor. Only results
     /// for the same foreground command and unchanged identity are applied.
     pub(super) fn probe_missing_codex_session(&mut self, cx: &mut Context<Self>) {
+        if self.running_program.as_deref() == Some("claude") {
+            self.probe_missing_claude_session(cx);
+            return;
+        }
         if self.exited.is_some()
             || self.ai_session_probe_pending
             || self.ssh_destination.is_some()
@@ -852,7 +867,7 @@ impl TerminalView {
         }) {
             return;
         }
-        let Some(exec_context) = self.exec_context.clone() else { return };
+        let exec_context = self.exec_context.clone();
         let epoch = self.ai_session_probe_epoch;
         let pane_id = self.pane_id;
         let shell_pid = self.session.as_ref().map(|session| session.shell_pid);
@@ -862,7 +877,7 @@ impl TerminalView {
         let work = cx.background_executor().spawn(async move {
             crate::platform::ai_session_identity::probe_codex_session(
                 pane_id,
-                Some(&exec_context),
+                exec_context.as_ref(),
                 shell_pid,
             )
         });
