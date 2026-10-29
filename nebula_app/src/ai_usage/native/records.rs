@@ -32,7 +32,7 @@ fn codex(state: &mut FileUsage, record: &Value, month: NaiveDate) {
                     record.get("timestamp").and_then(time).map(|t| t.timestamp_millis());
                 state.output = 0;
                 state.partial_metrics &= state.previous.is_none();
-                state.metric = None;
+                // Keep the last completed turn until this turn has usage samples.
             },
             Some("token_count") => {
                 let Some(total) = payload.pointer("/info/total_token_usage") else { return };
@@ -118,7 +118,7 @@ fn claude(state: &mut FileUsage, record: &Value, month: NaiveDate) {
             state.started = Some(at.timestamp_millis());
             state.output = 0;
             state.partial_metrics = false;
-            state.metric = None;
+            // Keep the last completed turn until this turn has usage samples.
         }
         return;
     }

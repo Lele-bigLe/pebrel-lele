@@ -73,7 +73,7 @@ impl NebulaWorkspace {
                         tab,
                         resume_ai,
                         this.tabs.len(),
-                        &prepared.choices,
+                        &prepared.deferred,
                         window,
                         cx,
                     ) {
@@ -134,7 +134,7 @@ impl NebulaWorkspace {
         tab: &crate::session::TabSession,
         resume_ai: bool,
         at: usize,
-        choices: &[crate::session::AgentSession],
+        deferred: &[crate::session::AgentSession],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -194,8 +194,8 @@ impl NebulaWorkspace {
             }
             if resume_ai && let Some(agent) = agent {
                 pane.view.update(cx, |view, cx| {
-                    if choices.contains(agent) {
-                        view.restore_agent_selection(agent.clone(), cx);
+                    if deferred.contains(agent) {
+                        view.restore_agent_deferred(agent.clone(), cx);
                     } else {
                         view.restore_agent(agent.clone(), cx);
                     }

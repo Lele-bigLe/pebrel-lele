@@ -114,7 +114,7 @@ impl NebulaWorkspace {
             if let WorkspaceTab::Terminal { panes, .. } = tab {
                 for pane in panes {
                     let view = pane.view.read(cx);
-                    if view.ssh_destination.is_some() {
+                    if view.ssh_destination.is_some() || view.saved_agent_pending() {
                         continue;
                     }
                     if let Some(agent) = view.session_agent()
@@ -248,6 +248,9 @@ impl NebulaWorkspace {
         view: &Entity<TerminalView>,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        if view.read(cx).saved_agent_pending() || view.read(cx).can_choose_recovery_session() {
+            return self.render_saved_agent(view, cx);
+        }
         let shortcuts = self.render_agent_shortcuts(view, cx);
         let view = view.read(cx);
         if view.ssh_destination.is_some() {

@@ -28,6 +28,7 @@ pub(super) struct HistoryState {
     restoring: Vec<(AgentKind, String, u64, std::time::Instant)>,
     annotations: Option<Result<annotations::Store, String>>,
     favorites_only: bool,
+    resume_target: Option<gpui::WeakEntity<TerminalView>>,
 }
 
 impl HistoryState {
@@ -36,10 +37,61 @@ impl HistoryState {
         self.task = None;
         self.entries.clear();
         self.annotations = None;
+        self.resume_target = None;
     }
 }
 
 impl NebulaWorkspace {
+    pub(super) fn choose_saved_agent_history(
+        &mut self,
+        view: &Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let source =
+            view.read(cx).session_agent().and_then(|agent| AgentKind::parse(&agent.source));
+        if !view.read(cx).can_retry_recovery() {
+            return;
+        }
+        if self.history.active {
+            self.close_command_palette(window, cx);
+        }
+        self.open_ai_history(window, cx);
+        self.history.source = source;
+        self.history.resume_target = Some(view.downgrade());
+        self.reset_history_selection(cx);
+    }
+
+    pub(super) fn resume_saved_history_target(
+        &mut self,
+        source: AgentKind,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(target) = self.history.resume_target.clone() else { return false };
+        self.dismiss_palette_state();
+        if let Some(view) = target.upgrade() {
+            let pane = view.read(cx).pane_id;
+            if let Some(tab) = self.tab_of_pane(pane) {
+                self.activate_tab(tab, window, cx);
+                self.focus_pane(tab, pane, window, cx);
+            }
+            view.update(cx, |view, cx| {
+                view.continue_saved_agent(
+                    Some(crate::session::AgentSession {
+                        source: source.slug().to_owned(),
+                        session_id: Some(id.to_owned()),
+                        session_file: None,
+                    }),
+                    cx,
+                )
+            });
+            self.focus_active(window, cx);
+        }
+        true
+    }
+
     pub(super) fn open_ai_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.history.active {
             self.close_command_palette(window, cx);

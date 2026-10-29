@@ -1538,6 +1538,10 @@
   "files.search_empty": "没有匹配的文件",
   "files.search_empty_reason": "当前目录中没有符合查询条件的文件或文件夹。",
   "session": {
+    "saved_pending": "{agent} · 待继续",
+    "resume_saved": "继续会话",
+    "resume_busy": "此会话正在其他终端使用，已保留在侧栏。",
+    "resume_unverified": "暂时无法确认会话占用状态，请稍后重试或从历史中选择其他会话。",
     "restore_checking": "正在核对恢复会话，请稍候再关闭。",
     "restore_summary": "已恢复 {restored} 个标签；跳过占用 {busy} 个，身份或占用待确认 {unknown} 个。",
     "restore_crashed": "上次未正常退出，已恢复 {restored} 个标签；跳过占用 {busy} 个，身份或占用待确认 {unknown} 个。",

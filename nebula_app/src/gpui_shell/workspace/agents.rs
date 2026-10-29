@@ -9,6 +9,7 @@ use gpui::{Context, Window};
 use nebula_split::SplitTree;
 
 mod changes;
+mod recovery;
 mod shortcuts;
 mod updates;
 

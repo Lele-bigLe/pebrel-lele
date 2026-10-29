@@ -349,10 +349,13 @@ impl NebulaWorkspace {
                 let expanded_session = tree_mode && pane_count > 1
                     && self.projects.expanded_sessions.contains(&self.meta(ix).runtime_id);
                 let tree_agent = tree_mode.then(|| self.tabs[ix].focused_view()
-                    .and_then(|view| view.read(cx).runtime_chat_agent())).flatten();
+                    .and_then(|view| view.read(cx).session_agent())).flatten();
                 let tool = session_row.then(|| {
                     tree_agent.as_ref().map_or("Shell", |agent| {
-                        if agent.kind == "claude" { "Claude" } else { &agent.display_name }
+                        if agent.source == "claude" { "Claude" } else {
+                            crate::ai_agents::AgentKind::parse(&agent.source)
+                                .map_or(agent.source.as_str(), |kind| kind.display_name())
+                        }
                     }).to_owned()
                 });
                 let activity = if tree_mode {

@@ -49,20 +49,7 @@ fn path() -> PathBuf {
 }
 
 pub(crate) fn same_root(a: &Path, b: &Path) -> bool {
-    if a == b {
-        return true;
-    }
-    // Guest paths retain their case-sensitive identity. Local Windows paths use
-    // the same spelling-independent identity in the library and tab filters.
-    #[cfg(windows)]
-    {
-        let a = a.to_string_lossy();
-        let b = b.to_string_lossy();
-        if !a.starts_with("\\\\") && !b.starts_with("\\\\") {
-            return a.replace('/', "\\").eq_ignore_ascii_case(&b.replace('/', "\\"));
-        }
-    }
-    false
+    crate::platform::local_paths::same_project_root(a, b)
 }
 
 pub(crate) fn load() -> io::Result<Library> {

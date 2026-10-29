@@ -36,11 +36,16 @@ impl NebulaWorkspace {
                     let text =
                         pane.custom_name.clone().map(SharedString::from).unwrap_or(title.text);
                     let tooltip = text.clone();
-                    let agent = pane.view.read(cx).runtime_chat_agent();
+                    let agent = pane.view.read(cx).session_agent();
                     let tool = agent
                         .as_ref()
                         .map_or("Shell", |agent| {
-                            if agent.kind == "claude" { "Claude" } else { &agent.display_name }
+                            if agent.source == "claude" {
+                                "Claude"
+                            } else {
+                                crate::ai_agents::AgentKind::parse(&agent.source)
+                                    .map_or(agent.source.as_str(), |kind| kind.display_name())
+                            }
                         })
                         .to_owned();
                     let activity = pane.view.read(cx).sidebar_activity();

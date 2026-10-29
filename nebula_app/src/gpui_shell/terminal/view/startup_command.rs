@@ -9,35 +9,39 @@ pub(super) struct SessionRecovery {
     resolving: bool,
     submitted: bool,
     failed: bool,
-    choosing_session: bool,
+    deferred: bool,
 }
 
 impl SessionRecovery {
     pub(super) fn preparing(&self) -> bool {
-        self.resolving || (self.awaiting_confirmation && !self.submitted && !self.failed)
+        self.resolving
+            || (self.awaiting_confirmation && !self.submitted && !self.failed && !self.deferred)
     }
 
-    pub(super) fn accepts_choice_event(&self, event: &crate::ai_hook::AiHookEvent) -> bool {
+    pub(super) fn accepts_recovery_event(&self, event: &crate::ai_hook::AiHookEvent) -> bool {
         use crate::ai_hook::AiHookKind;
-        !self.choosing_session
-            || (self.target.as_ref().is_some_and(|target| target.source == event.source)
-                && (matches!(event.kind, AiHookKind::SessionStart | AiHookKind::PromptSubmit)
-                    || (event.source == "codex"
-                        && event.codex_hooks.is_none()
-                        && event.kind == AiHookKind::TurnDone)))
+        !self.deferred
+            && (!self.awaiting_confirmation
+                || self.target.as_ref().is_some_and(|target| {
+                    !matches!(target.source.as_str(), "codex" | "claude")
+                        || (target.source == event.source
+                            && (matches!(
+                                event.kind,
+                                AiHookKind::SessionStart | AiHookKind::PromptSubmit
+                            ) || (event.source == "codex"
+                                && event.codex_hooks.is_none()
+                                && event.kind == AiHookKind::TurnDone)))
+                }))
     }
 
     pub(super) fn accepts(&self, target: &crate::session::AgentSession) -> bool {
         !(self.awaiting_confirmation
             && self.target.as_ref().is_some_and(|expected| {
                 expected.source != target.source
-                    || (!self.choosing_session
-                        && ((expected.session_id.is_some()
-                            && expected.session_id != target.session_id)
-                            || (expected.session_file.is_some()
-                                && (target.session_file.is_some()
-                                    || expected.session_id.is_none())
-                                && expected.session_file != target.session_file)))
+                    || ((expected.session_id.is_some() && expected.session_id != target.session_id)
+                        || (expected.session_file.is_some()
+                            && (target.session_file.is_some() || expected.session_id.is_none())
+                            && expected.session_file != target.session_file))
             }))
     }
 
@@ -55,7 +59,7 @@ impl SessionRecovery {
         self.target = Some(target);
         self.awaiting_confirmation = false;
         self.failed = false;
-        self.choosing_session = false;
+        self.deferred = false;
         true
     }
 
@@ -121,14 +125,13 @@ impl TerminalView {
     }
 
     /// Only an unconfirmed cold resume and the provider's exact missing-ID
-    /// error may open a chooser. Ordinary command failures retain their target.
+    /// error may defer the target. Ordinary command failures retain their target.
     pub(super) fn codex_restore_target_missing(&self, exit_code: Option<i32>) -> bool {
         // CMD's authoritative process/prompt boundary has no exit code. The
         // exact missing target message still identifies this failed restore.
         if exit_code == Some(0)
             || !self.recovery.awaiting_confirmation
             || !self.recovery.submitted
-            || self.recovery.choosing_session
             || self.running_program.as_deref() != Some("codex")
         {
             return false;
@@ -143,32 +146,19 @@ impl TerminalView {
         })
     }
 
-    pub(super) fn choose_codex_recovery_session(&mut self, cx: &mut Context<Self>) {
-        let Some(command) = crate::ai_agents::AgentKind::Codex.resume_picker_command() else {
-            return;
-        };
-        // Keep the old target until the user's choice receives a native
-        // acknowledgement. Directory similarity cannot recover a missing ID.
-        self.recovery.choosing_session = true;
-        self.recovery.submitted = false;
-        self.recovery.failed = false;
-        self.last_command_failed = false;
-        self.run_command(command, cx);
-        cx.emit(TerminalViewEvent::Notification(crate::notify::Notification::Text {
-            body: ui_language().text(crate::i18n::Message::SessionRestoreChooseCodex).to_owned(),
-            program: Some("codex".into()),
-        }));
+    pub(super) fn defer_missing_recovery(&mut self, cx: &mut Context<Self>) {
+        if let Some(target) = self.recovery.target.clone() {
+            self.restore_agent_deferred(target, cx);
+        }
     }
 
     pub(crate) fn can_choose_recovery_session(&self) -> bool {
         self.can_retry_recovery()
-            && self.recovery.target.as_ref().is_some_and(|target| target.source == "codex")
-    }
-
-    pub(crate) fn choose_recovery_session(&mut self, cx: &mut Context<Self>) {
-        if self.can_choose_recovery_session() {
-            self.choose_codex_recovery_session(cx);
-        }
+            && self
+                .recovery
+                .target
+                .as_ref()
+                .is_some_and(|target| matches!(target.source.as_str(), "codex" | "claude"))
     }
 
     pub(crate) fn seed_restored_cwd(&mut self, cwd: String, cx: &mut Context<Self>) {
@@ -230,45 +220,97 @@ impl TerminalView {
         }
     }
 
-    pub(crate) fn restore_agent(
-        &mut self,
-        agent: crate::session::AgentSession,
-        cx: &mut Context<Self>,
-    ) {
-        self.restore_agent_with_choice(agent, false, cx);
-    }
-
-    pub(crate) fn restore_agent_selection(
-        &mut self,
-        agent: crate::session::AgentSession,
-        cx: &mut Context<Self>,
-    ) {
-        self.restore_agent_with_choice(agent, true, cx);
-    }
-
-    fn restore_agent_with_choice(
+    pub(crate) fn restore_agent_deferred(
         &mut self,
         mut agent: crate::session::AgentSession,
-        selection_required: bool,
         cx: &mut Context<Self>,
     ) {
         agent.normalize_identity();
-        let choice_command = if selection_required {
-            crate::ai_agents::AgentKind::parse(&agent.source)
-                .and_then(crate::ai_agents::AgentKind::resume_picker_command)
-        } else {
-            agent.recovery_choice_command()
+        self.recovery = SessionRecovery {
+            target: Some(agent),
+            awaiting_confirmation: true,
+            deferred: true,
+            ..SessionRecovery::default()
         };
-        let choosing_session = choice_command.is_some();
-        let command = if selection_required {
-            choice_command
-        } else {
-            agent.resume_command().or(choice_command)
-        };
+        cx.emit(TerminalViewEvent::TitleChanged);
+        cx.notify();
+    }
+
+    pub(crate) fn saved_agent_pending(&self) -> bool {
+        self.recovery.deferred && self.recovery.target.is_some() && self.running_program.is_none()
+    }
+
+    pub(crate) fn continue_saved_agent(
+        &mut self,
+        selected: Option<crate::session::AgentSession>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_retry_recovery() {
+            return;
+        }
+        let Some(expected) = self.recovery.target.clone() else { return };
+        if selected.is_none() && !matches!(expected.source.as_str(), "codex" | "claude") {
+            self.retry_recovery(cx);
+            return;
+        }
+        let target = selected.unwrap_or_else(|| expected.clone());
+        if target.resume_command().is_none() {
+            return;
+        }
+        let epoch = self.ai_session_probe_epoch;
+        self.recovery.resolving = true;
+        let worker = cx.background_executor().spawn(async move {
+            let available = crate::platform::ai_session_identity::recovery::available(&target);
+            (target, available)
+        });
+        cx.spawn(async move |this, cx| {
+            let (target, available) = worker.await;
+            let _ = this.update(cx, |view, cx| {
+                view.recovery.resolving = false;
+                if view.recovery.target.as_ref() != Some(&expected)
+                    || view.ai_session_probe_epoch != epoch
+                    || !view.can_retry_recovery()
+                {
+                    cx.notify();
+                    return;
+                }
+                match available {
+                    Ok(true) => view.restore_agent(target, cx),
+                    other => {
+                        let message = if other == Ok(false) {
+                            crate::i18n::Message::SessionResumeBusy
+                        } else {
+                            crate::i18n::Message::SessionResumeUnverified
+                        };
+                        cx.emit(TerminalViewEvent::Notification(
+                            crate::notify::Notification::Text {
+                                body: ui_language().text(message).to_owned(),
+                                program: Some(target.source),
+                            },
+                        ));
+                        cx.notify();
+                    },
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn restore_agent(
+        &mut self,
+        mut agent: crate::session::AgentSession,
+        cx: &mut Context<Self>,
+    ) {
+        agent.normalize_identity();
+        if agent.session_id.is_none() && matches!(agent.source.as_str(), "codex" | "claude") {
+            self.restore_agent_deferred(agent, cx);
+            return;
+        }
+        let command = agent.resume_command();
         self.recovery = SessionRecovery {
             target: Some(agent.clone()),
             awaiting_confirmation: true,
-            choosing_session,
             ..SessionRecovery::default()
         };
         if agent.source != "pi" || self.ssh_destination.is_some() {
@@ -371,7 +413,7 @@ impl TerminalView {
     }
 
     pub(crate) fn can_retry_recovery(&self) -> bool {
-        self.recovery.failed
+        (self.recovery.failed || self.recovery.deferred)
             && !self.recovery.resolving
             && self.recovery.target.is_some()
             && self.running_program.is_none()
@@ -382,7 +424,7 @@ impl TerminalView {
         if self.can_retry_recovery()
             && let Some(target) = self.recovery.target.clone()
         {
-            self.restore_agent_with_choice(target, self.recovery.choosing_session, cx);
+            self.restore_agent(target, cx);
         }
     }
 

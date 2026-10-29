@@ -24,62 +24,7 @@ pub(crate) enum Purpose {
 fn executable() -> Result<PathBuf, Error> {
     let launcher = crate::ai_hook::integrations::executable(crate::ai_agents::AgentKind::Codex)
         .ok_or(Error::Unavailable)?;
-    let launcher = std::fs::canonicalize(&launcher).unwrap_or(launcher);
-    if launcher
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-    {
-        return Ok(launcher);
-    }
-    let triple = match (std::env::consts::ARCH, std::env::consts::OS) {
-        ("x86_64", "windows") => "x86_64-pc-windows-msvc",
-        ("aarch64", "windows") => "aarch64-pc-windows-msvc",
-        ("x86_64", "linux") => "x86_64-unknown-linux-musl",
-        ("aarch64", "linux") => "aarch64-unknown-linux-musl",
-        ("x86_64", "macos") => "x86_64-apple-darwin",
-        ("aarch64", "macos") => "aarch64-apple-darwin",
-        _ => return Err(Error::Unavailable),
-    };
-    let platform = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => "win32-x64",
-        ("windows", "aarch64") => "win32-arm64",
-        ("linux", "x86_64") => "linux-x64",
-        ("linux", "aarch64") => "linux-arm64",
-        ("macos", "x86_64") => "darwin-x64",
-        ("macos", "aarch64") => "darwin-arm64",
-        _ => return Err(Error::Unavailable),
-    };
-    let binary = if cfg!(windows) { "codex.exe" } else { "codex" };
-    for parent in launcher.ancestors().skip(1).take(3) {
-        for package in [
-            parent.to_path_buf(),
-            parent.join("node_modules/@openai/codex"),
-            parent.join(format!("node_modules/@openai/codex-{platform}")),
-            parent
-                .join(format!("node_modules/@openai/codex/node_modules/@openai/codex-{platform}")),
-            parent.join(format!("codex-{platform}")),
-        ] {
-            for directory in ["bin", "codex"] {
-                let candidate = package.join("vendor").join(triple).join(directory).join(binary);
-                if candidate.is_file() {
-                    return Ok(candidate);
-                }
-            }
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::io::Read as _;
-        let mut header = [0; 4];
-        if std::fs::File::open(&launcher).and_then(|mut file| file.read_exact(&mut header)).is_ok()
-            && (header == *b"\x7fELF"
-                || matches!(header, [0xcf, 0xfa, 0xed, 0xfe] | [0xca, 0xfe, 0xba, 0xbe]))
-        {
-            return Ok(launcher);
-        }
-    }
-    Err(Error::Unavailable)
+    crate::platform::cli::codex_executable(launcher).ok_or(Error::Unavailable)
 }
 
 pub(crate) struct Client {
@@ -123,8 +68,7 @@ impl Client {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        #[cfg(windows)]
-        command.creation_flags(crate::platform::process::CREATE_NO_WINDOW);
+        crate::platform::process::hidden_command(command.as_std_mut());
         let mut child = command.spawn().map_err(|_| Error::Unavailable)?;
         let input = child.stdin.take().ok_or(Error::Transport)?;
         let output = BufReader::new(child.stdout.take().ok_or(Error::Transport)?);

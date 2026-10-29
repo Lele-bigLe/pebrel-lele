@@ -2,6 +2,8 @@
 
 ## Status
 
+Launch and selector policy is superseded by [explicit continuation](../../../ai_sessions/2026-10-29-deferred-session-continuation.md).
+
 Implemented on 2026-10-28. Existing affected regressions passed; live agent
 restoration remains a separate acceptance step.
 

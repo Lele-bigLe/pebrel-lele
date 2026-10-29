@@ -1116,7 +1116,7 @@ fn submit_codex_restore(
 }
 
 #[gpui::test]
-fn missing_codex_target_opens_the_native_chooser_and_confirms_the_users_choice(
+fn missing_codex_target_waits_for_explicit_selection_and_confirms_the_users_choice(
     cx: &mut TestAppContext,
 ) {
     let (view, window, receiver) = open(cx);
@@ -1125,14 +1125,12 @@ fn missing_codex_target_opens_the_native_chooser_and_confirms_the_users_choice(
         feed(view, b"\r\nERROR: No saved session found with ID saved-missing. Run codex resume without an ID.\r\n");
         view.process_event(Event::CommandDone { exit_code: Some(1) }, cx);
         assert_eq!(view.session_agent(), Some(saved));
-        assert!(view.pending_shell_command.is_some());
+        assert!(view.saved_agent_pending());
         assert!(receiver.try_iter().all(|message| !matches!(message, Msg::Input(_))));
         feed(view, b"\x1b]133;A\x07user@host:~$ ");
         view.process_event(Event::Wakeup, cx);
-        assert!(receiver.try_iter().any(|message| {
-            matches!(message, Msg::Input(bytes) if bytes.as_ref() == b"codex resume --no-daemon")
-        }));
-        assert!(view.recovery_pending(), "opening a chooser is not a recovered conversation");
+        assert!(receiver.try_iter().all(|message| !matches!(message, Msg::Input(_))));
+        assert!(view.recovery_pending(), "a deferred target is not a recovered conversation");
         let selected = crate::session::AgentSession {
             source: "codex".into(),
             session_id: Some("0199a213-c2a4-7cf5-8f6b-d746fbb6e86c".into()),
@@ -1155,6 +1153,10 @@ fn missing_codex_target_opens_the_native_chooser_and_confirms_the_users_choice(
         foreign_start.session_file = None;
         assert!(!view.handle_ai_hook(&foreign_start, cx));
         assert!(view.recovery_pending());
+        view.restore_agent(selected.clone(), cx);
+        feed(view, b"codex resume 0199a213-c2a4-7cf5-8f6b-d746fbb6e86c --no-daemon");
+        view.flush_pending_runtime_submit(cx);
+        view.process_event(Event::CommandStart, cx);
         assert!(view.handle_ai_hook(&event, cx));
         assert_eq!(view.session_agent(), Some(selected));
         assert!(!view.recovery_pending());
@@ -1203,8 +1205,8 @@ fn cmd_prompt_completion_without_exit_code_still_offers_the_missing_conversation
         );
         assert_eq!(view.session_agent(), Some(saved));
         assert!(
-            view.pending_shell_command.is_some(),
-            "the real CMD completion route queues the chooser"
+            view.saved_agent_pending(),
+            "the real CMD completion route retains a deferred conversation"
         );
         assert!(view.recovery_pending());
     });
@@ -1221,8 +1223,8 @@ fn a_failed_restore_can_choose_a_conversation_without_recognizing_an_error_strin
         feed(view, "\r\n未找到指定会话\r\n".as_bytes());
         view.finish_foreground_command(None, cx);
         assert!(view.can_choose_recovery_session());
-        view.choose_recovery_session(cx);
-        assert!(view.pending_shell_command.is_some());
+        view.restore_agent_deferred(saved.clone(), cx);
+        assert!(view.pending_shell_command.is_none());
         assert_eq!(view.session_agent(), Some(saved));
         assert!(view.recovery_pending());
     });
@@ -1250,7 +1252,7 @@ fn lifecycle_only_hook_cannot_replace_a_verified_rollout_id(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn a_failed_codex_chooser_does_not_start_an_automatic_retry_loop(cx: &mut TestAppContext) {
+fn a_missing_codex_target_does_not_start_an_automatic_retry_loop(cx: &mut TestAppContext) {
     let (view, window, receiver) = open(cx);
     view.update(window, |view, cx| {
         let saved = submit_codex_restore(view, &receiver, cx);
@@ -1259,10 +1261,6 @@ fn a_failed_codex_chooser_does_not_start_an_automatic_retry_loop(cx: &mut TestAp
         view.process_event(Event::CommandDone { exit_code: Some(1) }, cx);
         feed(view, b"\x1b]133;A\x07user@host:~$ ");
         view.flush_pending_shell_command(cx);
-        feed(view, b"codex resume --no-daemon");
-        view.flush_pending_runtime_submit(cx);
-        view.process_event(Event::CommandStart, cx);
-        receiver.try_iter().for_each(drop);
         feed(view, error);
         view.process_event(Event::CommandDone { exit_code: Some(1) }, cx);
         assert!(view.pending_shell_command.is_none());

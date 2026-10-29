@@ -1,6 +1,22 @@
 //! Native host and drive observations used when resolving local file links.
 //! URI parsing and the decision to open a link remain in the file-link layer.
 
+pub(crate) fn same_project_root(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if a == b {
+        return true;
+    }
+    // Guest paths retain case-sensitive identity, including Windows UNC paths.
+    #[cfg(windows)]
+    {
+        let a = a.to_string_lossy();
+        let b = b.to_string_lossy();
+        if !a.starts_with("\\\\") && !b.starts_with("\\\\") {
+            return a.replace('/', "\\").eq_ignore_ascii_case(&b.replace('/', "\\"));
+        }
+    }
+    false
+}
+
 pub(crate) fn completion_case_sensitive() -> bool {
     !cfg!(windows)
 }

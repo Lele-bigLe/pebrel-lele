@@ -4,6 +4,8 @@
 
 Partially superseded by [preserving unidentified agents](2026-10-28-preserve-unidentified-agents.md).
 
+Codex/Claude launch timing is superseded by [explicit continuation](../../../ai_sessions/2026-10-29-deferred-session-continuation.md).
+
 Implemented; compiled/native acceptance is tracked separately from source review.
 
 ## Context

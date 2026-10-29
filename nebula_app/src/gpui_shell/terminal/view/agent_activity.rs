@@ -19,12 +19,12 @@ impl TerminalView {
             log::warn!("ai_hook: pane={} rejected foreign client pid={client_pid}", self.pane_id);
             return false;
         }
+        if !self.recovery.accepts_recovery_event(event) {
+            return false;
+        }
         if !self.agent_activity.accepts_hook(event) {
             log::debug!("ai_hook: pane={} ignored hook outside the active lifecycle", self.pane_id);
             return true;
-        }
-        if !self.recovery.accepts_choice_event(event) {
-            return false;
         }
         // A lifecycle-only Hook ID cannot downgrade the independently verified
         // open rollout. Keep consuming lifecycle events; the next process probe

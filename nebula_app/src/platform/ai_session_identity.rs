@@ -144,11 +144,10 @@ fn parse_probe_context(output: &str) -> Option<CodexSession> {
         if !valid_uuid(id) {
             continue;
         }
-        // Codex's main interactive thread is marked as a CLI/user thread.
-        // Keep accepting older session_meta lines that lack these fields, but
-        // reject an explicit guardian/sub-agent marker.
-        if !matches_optional_string(payload, &meta, "source", "cli")
-            || !matches_optional_string(payload, &meta, "thread_source", "user")
+        // A thread resumed by the CLI retains its original VS Code source.
+        // Ownership comes from the verified process tree; subagents stay excluded.
+        if !matches_optional_string(payload, &meta, "source", &["cli", "vscode"])
+            || !matches_optional_string(payload, &meta, "thread_source", &["user"])
         {
             continue;
         }
@@ -204,12 +203,12 @@ fn matches_optional_string(
     payload: &serde_json::Value,
     root: &serde_json::Value,
     key: &str,
-    expected: &str,
+    expected: &[&str],
 ) -> bool {
     payload
         .get(key)
         .or_else(|| root.get(key))
-        .map_or(true, |value| value.as_str() == Some(expected))
+        .is_none_or(|value| value.as_str().is_some_and(|value| expected.contains(&value)))
 }
 
 fn valid_uuid(id: &str) -> bool {
@@ -458,9 +457,9 @@ mod tests {
     }
 
     #[test]
-    fn selects_cli_user_rollout_and_rejects_guardian_thread() {
+    fn selects_owned_user_rollout_and_rejects_guardian_thread() {
         let output = format!(
-            "1996\t37\t/home/hello/.codex/sessions/2026/09/07/rollout-x-{ROOT_ID}.jsonl\t{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{ROOT_ID}\",\"source\":\"cli\",\"thread_source\":\"user\"}}}}\n1996\t80\t/home/hello/.codex/sessions/2026/09/07/rollout-x-{GUARDIAN_ID}.jsonl\t{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{GUARDIAN_ID}\",\"source\":\"cli\",\"thread_source\":\"guardian\"}}}}\n"
+            "1996\t37\t/home/hello/.codex/sessions/2026/09/07/rollout-x-{ROOT_ID}.jsonl\t{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{ROOT_ID}\",\"source\":\"vscode\",\"thread_source\":\"user\"}}}}\n1996\t80\t/home/hello/.codex/sessions/2026/09/07/rollout-x-{GUARDIAN_ID}.jsonl\t{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{GUARDIAN_ID}\",\"source\":\"cli\",\"thread_source\":\"guardian\"}}}}\n"
         );
         assert_eq!(parse_probe_records(&output).as_deref(), Some(ROOT_ID));
     }

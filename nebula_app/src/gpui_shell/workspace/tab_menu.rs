@@ -119,20 +119,34 @@ impl NebulaWorkspace {
             self.tabs[ix].focused_view().map(|view| copy_working_directory_item(view, cx));
         let project_item = self.project_assignment_item(ix, window, cx);
         let workspace = cx.entity().downgrade();
+        let history_workspace = workspace.clone();
         let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
             if let Some(view) = choose_session {
                 menu = menu.item(
                     PopupMenuItem::new(language.text(Message::SessionChooseConversation)).on_click(
-                        move |_, _, cx| {
-                            view.update(cx, |view, cx| view.choose_recovery_session(cx))
+                        move |_, window, cx| {
+                            if let Some(workspace) = history_workspace.upgrade() {
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.choose_saved_agent_history(&view, window, cx);
+                                });
+                            }
                         },
                     ),
                 );
             }
             if let Some(view) = retry {
+                let label = if view.read(_cx).saved_agent_pending() {
+                    Message::SessionResumeSaved
+                } else {
+                    Message::SessionRetry
+                };
                 menu = menu
-                    .item(PopupMenuItem::new(language.text(Message::SessionRetry)).on_click(
-                        move |_, _, cx| view.update(cx, |view, cx| view.retry_recovery(cx)),
+                    .item(PopupMenuItem::new(language.text(label)).on_click(
+                        move |_, window, cx| {
+                            let focus = view.read(cx).focus_handle.clone();
+                            view.update(cx, |view, cx| view.continue_saved_agent(None, cx));
+                            focus.focus(window, cx);
+                        },
                     ))
                     .separator();
             }

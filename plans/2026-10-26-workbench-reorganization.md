@@ -94,7 +94,7 @@ codex_usage/capacity.rs、codex_usage/entitlements.rs；只在必要时调整 ai
 
 ## 参考与采用范围
 
-- [cmux](https://github.com/manaflow-ai/cmux)：参考任务导航与状态，不引入其平台实现。
+- 任务导航与状态显示复用项目现有的原生会话状态。
 - [Wave Workspaces](https://docs.waveterm.dev/workspaces)：参考工作区与内容层级分离。
 - [Zed Git](https://zed.dev/docs/git)：参考仓库审阅、左右对照和块级操作。
 - [Hunk](https://github.com/modem-dev/hunk)：参考阅读与审阅意见的衔接，不移植其 OpenTUI/Pierre 技术栈。

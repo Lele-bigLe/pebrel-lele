@@ -6,6 +6,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::ai_agents::AgentKind;
+use crate::platform::cli::command;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Version {
@@ -194,11 +195,7 @@ fn installer(kind: AgentKind, executable: &Path, package: &str) -> Installer {
             .flat_map(|dir| ["npm.exe", "npm.cmd", "npm"].map(|name| dir.join(name)))
             .find(|path| path.is_file());
         if let Some(executable) = npm {
-            let prefix = if !cfg!(windows) && parent.file_name().is_some_and(|name| name == "lib") {
-                parent.parent().unwrap_or(parent)
-            } else {
-                parent
-            };
+            let prefix = crate::platform::cli::npm_prefix(parent);
             return Installer::Npm { executable, prefix: prefix.to_owned() };
         }
     }
@@ -222,22 +219,6 @@ fn installer(kind: AgentKind, executable: &Path, package: &str) -> Installer {
         }
     }
     Installer::Manual
-}
-
-fn command(executable: &Path) -> Command {
-    // Rust handles .cmd/.bat quoting; PowerShell scripts require an explicit host.
-    if cfg!(windows)
-        && executable
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("ps1"))
-    {
-        let mut command = Command::new("powershell.exe");
-        command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"]).arg(executable);
-        command
-    } else {
-        Command::new(executable)
-    }
 }
 
 fn output(command: Command, timeout: Duration, limit: usize) -> Result<String, String> {

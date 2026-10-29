@@ -52,6 +52,11 @@ impl TerminalView {
     }
 
     pub(super) fn on_command_start(&mut self, cx: &mut Context<Self>) {
+        if self.saved_agent_pending()
+            && crate::ai_agents::AgentKind::parse_command(&self.suggest.last_committed).is_some()
+        {
+            self.recovery = Default::default();
+        }
         if !self.agent_activity.hook_seen() {
             self.answers.begin_command();
             // Shell capture covers wrappers/WSL until a hook owns the session.
@@ -177,7 +182,7 @@ impl TerminalView {
                 Some(crate::runtime_api::RuntimeRunOutcome::command_done(run, exit_code));
         }
         if choose_codex_session {
-            self.choose_codex_recovery_session(cx);
+            self.defer_missing_recovery(cx);
         }
         cx.notify();
     }
@@ -833,6 +838,9 @@ impl TerminalView {
     }
 
     pub(crate) fn ai_session_save_pending(&self) -> bool {
+        if self.saved_agent_pending() {
+            return false;
+        }
         // A failed refresh cannot erase an already durable identity. Pi/Codex
         // without any native target must finish identifying before safe exit.
         self.ai_session_probe_pending

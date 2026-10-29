@@ -1538,6 +1538,10 @@
   "files.search_empty": "No matching files",
   "files.search_empty_reason": "No files or folders match this query in the current directory.",
   "session": {
+    "saved_pending": "{agent} · Ready to continue",
+    "resume_saved": "Continue session",
+    "resume_busy": "This conversation is in use by another terminal. Its saved workspace entry was retained.",
+    "resume_unverified": "Conversation ownership could not be verified. Retry later or choose another conversation from history.",
     "restore_checking": "Checking saved conversations. Please wait before closing.",
     "restore_summary": "Restored {restored} tabs; skipped {busy} in use; {unknown} need identity or ownership confirmation.",
     "restore_crashed": "Recovered {restored} tabs after an unclean exit; skipped {busy} in use; {unknown} need identity or ownership confirmation.",

@@ -1,5 +1,21 @@
 # Codex turn change viewing
 
+## Status
+
+Implemented. Native UI acceptance is separate from build and schema checks.
+
+## Context
+
+The user requested read-only changes for each Codex turn, without undo or editor
+extension hosting.
+
+## Evidence
+
+`ai_sessions/changes.rs` reads completed native file changes; the shared
+`ai_hook/integrations/codex_rpc.rs` transport performs bounded App Server reads.
+
+## Decision
+
 The terminal footer captures one local Codex native thread identity. Its dialog
 owns turn pagination, selected-turn item pagination and frozen patch views. It
 only calls `thread/turns/list` and `thread/items/list`; reading never resumes a
@@ -23,3 +39,28 @@ Historical diffs reuse the existing comparison UI but have an explicit read-only
 source flag and no live Git/review snapshot token. Live reload, staging and
 review entry points reject historical views. Later working-tree changes cannot
 replace their captured patch. No undo or extension hosting is introduced.
+
+## Rejected alternatives
+
+- Inferring historical edits from the current Git patch: it is a different snapshot.
+- Resuming a thread to read it: viewing must not claim its writer lock.
+
+## Consequences
+
+Only native persisted patches are available. Missing patches are not fabricated.
+Protocol errors remain visible and cannot become an empty successful turn.
+
+## Validation
+
+The initial implementation checked native pagination and patch fields against the
+installed Codex 0.165.0 and was included in Windows product builds. These facts
+do not establish every native UI interaction or future protocol compatibility.
+
+## Supersedes
+
+None.
+
+## Revisit when
+
+Codex changes its persisted patch schema, read-only paging contract or native
+file-change coverage.

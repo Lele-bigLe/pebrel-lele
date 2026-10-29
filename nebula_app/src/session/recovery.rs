@@ -1,4 +1,4 @@
-//! Cold restoration prunes busy panes and preserves identities that need native selection.
+//! Restore workspace identities without starting saved Codex or Claude processes.
 use std::collections::HashSet;
 
 use super::{LaunchSession, LayoutSession, Session};
@@ -7,7 +7,7 @@ pub(crate) struct Prepared {
     pub session: Session,
     pub busy: usize,
     pub unknown: usize,
-    pub choices: Vec<super::AgentSession>,
+    pub deferred: Vec<super::AgentSession>,
 }
 
 pub(crate) fn prepare(
@@ -17,7 +17,7 @@ pub(crate) fn prepare(
 ) -> Prepared {
     let mut busy = 0;
     let mut unknown = 0;
-    let mut choices = Vec::new();
+    let mut deferred = Vec::new();
     if resume_ai {
         let mut seen = HashSet::new();
         let old_active = session.active_tab;
@@ -68,11 +68,14 @@ pub(crate) fn prepare(
                             unknown += 1;
                             return false;
                         }
-                        if agent.session_id.is_none() {
-                            unknown += 1;
-                            if agent.recovery_choice_command().is_none() {
-                                return false;
+                        if matches!(agent.source.as_str(), "codex" | "claude") {
+                            if agent.session_id.is_none() {
+                                unknown += 1;
                             }
+                            deferred.push(agent.clone());
+                        } else if agent.session_id.is_none() {
+                            unknown += 1;
+                            return false;
                         } else {
                             let key = (agent.source.clone(), agent.session_id.clone());
                             if seen.contains(&key) {
@@ -89,15 +92,7 @@ pub(crate) fn prepare(
                                 },
                                 Err(()) => {
                                     unknown += 1;
-                                    if crate::ai_agents::AgentKind::parse(&agent.source)
-                                        .and_then(
-                                            crate::ai_agents::AgentKind::resume_picker_command,
-                                        )
-                                        .is_none()
-                                    {
-                                        return false;
-                                    }
-                                    choices.push(agent.clone());
+                                    return false;
                                 },
                             }
                         }
@@ -123,7 +118,7 @@ pub(crate) fn prepare(
             .collect();
         session.active_tab = new_active.unwrap_or(0).min(session.tabs.len().saturating_sub(1));
     }
-    Prepared { session, busy, unknown, choices }
+    Prepared { session, busy, unknown, deferred }
 }
 
 fn prune(

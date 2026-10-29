@@ -75,6 +75,12 @@ impl NebulaWorkspace {
                 self.add_terminal_at(Some(path), None, window, cx);
             },
             WorkspacePaletteAction::RunAiSession { command, cwd, resume } => {
+                if self.history.active
+                    && let Some((source, id)) = &resume
+                    && self.resume_saved_history_target(*source, id, window, cx)
+                {
+                    return;
+                }
                 if let Some((source, id)) = &resume
                     && self.focus_open_agent(*source, id, window, cx)
                 {
