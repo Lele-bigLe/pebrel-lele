@@ -239,7 +239,6 @@
     "queue_title": "Review feedback",
     "queue_count": "{files} files · {comments} added comments",
     "queue_empty": "No review comments yet. Select diff lines and add a comment to begin.",
-    "queue_open": "Open",
     "queue_comments": "Comments",
     "queue_preview": "Send preview",
     "queue_retry": "Check again",

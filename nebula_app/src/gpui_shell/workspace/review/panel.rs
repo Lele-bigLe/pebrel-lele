@@ -418,7 +418,7 @@ impl Render for Queue {
                         Button::new(("review-file-open", index))
                             .ghost()
                             .small()
-                            .label(language.text(Message::ReviewQueueOpen))
+                            .label(language.text(Message::CommonOpen))
                             .disabled(busy)
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.emit(QueueEvent::Open(open.clone(), None));

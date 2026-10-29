@@ -239,7 +239,6 @@
     "queue_title": "待反馈意见",
     "queue_count": "已加入：{files} 个文件 · {comments} 条意见",
     "queue_empty": "暂无待反馈意见。选中差异行并添加批注后，会在这里汇总。",
-    "queue_open": "查看",
     "queue_comments": "意见",
     "queue_preview": "发送预览",
     "queue_retry": "重新核对",
