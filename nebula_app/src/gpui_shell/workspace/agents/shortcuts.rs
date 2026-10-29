@@ -44,6 +44,7 @@ impl NebulaWorkspace {
                 agent.session_id
             });
         let history_root = state.working_directory().map(std::path::PathBuf::from);
+        let history_owner = cx.entity().downgrade();
         let language = crate::gpui_shell::config::ui_language(cx);
         let owner = cx.entity().downgrade();
         let weak_view = view.downgrade();
@@ -139,7 +140,11 @@ impl NebulaWorkspace {
                             .on_click(move |_, window, cx| {
                                 if let (Some(thread), Some(root)) = (&history_target, &history_root)
                                 {
-                                    super::changes::open(thread.clone(), root.clone(), window, cx);
+                                    if let Some(owner) = history_owner.upgrade() {
+                                        owner.update(cx, |this, cx| {
+                                            this.open_turn_review(thread.clone(), root.clone(), pane, window, cx);
+                                        });
+                                    }
                                 }
                             }),
                     )

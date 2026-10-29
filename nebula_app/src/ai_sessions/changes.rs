@@ -137,7 +137,13 @@ async fn read_edits(
                     "limit": 25, "sortDirection": "asc",
                 }),
             )
-            .await?;
+            .await;
+        let result = match result {
+            Err(Error::Unsupported) if cursor.is_none() && edits.is_empty() => {
+                return read_legacy_edits(client, thread, turn).await;
+            },
+            result => result?,
+        };
         let page: Page<Value> =
             serde_json::from_value(result).map_err(|_| Error::InvalidResponse)?;
         for entry in page.data {
@@ -165,4 +171,42 @@ async fn read_edits(
         }
     }
     Ok(Page { data: edits, next_cursor: cursor })
+}
+
+async fn read_legacy_edits(
+    client: &mut Client,
+    thread: &str,
+    turn: &str,
+) -> Result<Page<Edit>, Error> {
+    // Older rollout stores expose turns but reject item pagination. This read
+    // neither resumes the thread nor substitutes the current working tree.
+    let result =
+        client.call("thread/read", json!({"threadId": thread, "includeTurns": true})).await?;
+    let record = &result["thread"];
+    if record["id"].as_str() != Some(thread) {
+        return Err(Error::InvalidResponse);
+    }
+    let turns = record["turns"].as_array().ok_or(Error::InvalidResponse)?;
+    let selected = turns
+        .iter()
+        .find(|entry| entry["id"].as_str() == Some(turn))
+        .ok_or(Error::InvalidResponse)?;
+    let items = selected["items"].as_array().ok_or(Error::InvalidResponse)?;
+    let mut edits = Vec::new();
+    let mut bytes = 0usize;
+    for item in items {
+        if item["type"] != "fileChange" || item["status"] != "completed" {
+            continue;
+        }
+        for change in item["changes"].as_array().ok_or(Error::InvalidResponse)? {
+            let edit: Edit =
+                serde_json::from_value(change.clone()).map_err(|_| Error::InvalidResponse)?;
+            bytes = bytes.saturating_add(edit.diff.len());
+            if bytes > 16 * 1024 * 1024 || edits.len() >= 1000 {
+                return Err(Error::TooLarge);
+            }
+            edits.push(edit);
+        }
+    }
+    Ok(Page { data: edits, next_cursor: None })
 }

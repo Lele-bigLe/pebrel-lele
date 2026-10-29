@@ -12,7 +12,9 @@ impl From<codex_rpc::Error> for Issue {
             codex_rpc::Error::MissingHome => Self::MissingAuth,
             codex_rpc::Error::Transport => Self::Network,
             codex_rpc::Error::Unsupported => Self::CodexUnsupported,
-            codex_rpc::Error::InvalidResponse | codex_rpc::Error::TooLarge => Self::InvalidQuota,
+            codex_rpc::Error::InvalidResponse
+            | codex_rpc::Error::Rejected(_)
+            | codex_rpc::Error::TooLarge => Self::InvalidQuota,
         }
     }
 }

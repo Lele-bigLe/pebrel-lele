@@ -12,6 +12,7 @@ pub(crate) enum Error {
     MissingHome,
     Transport,
     Unsupported,
+    Rejected(i64),
     InvalidResponse,
     TooLarge,
 }
@@ -112,10 +113,10 @@ impl Client {
                 continue;
             }
             if let Some(error) = message.get("error") {
-                return Err(if error.get("code").and_then(Value::as_i64) == Some(-32601) {
-                    Error::Unsupported
-                } else {
-                    Error::InvalidResponse
+                return Err(match error.get("code").and_then(Value::as_i64) {
+                    Some(-32601) => Error::Unsupported,
+                    Some(code) => Error::Rejected(code),
+                    None => Error::InvalidResponse,
                 });
             }
             return message.get("result").cloned().ok_or(Error::InvalidResponse);

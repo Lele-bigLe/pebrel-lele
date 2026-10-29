@@ -964,20 +964,30 @@ impl NebulaWorkspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let collapsed = self.sidebar_collapsed;
-        if tab_reveal_instant(cx) || !self.sidebar_fold_armed {
-            return if collapsed {
-                div().into_any_element()
-            } else {
-                self.render_sidebar(window, cx).into_any_element()
-            };
+        let instant = tab_reveal_instant(cx) || !self.sidebar_fold_armed;
+        if instant && collapsed {
+            return div().into_any_element();
         }
-        let width = self.sidebar_closing_width.unwrap_or(self.sidebar_width);
-        let (from, to) = if collapsed { (width, 0.0) } else { (0.0, width) };
-        div()
+        let drop_border = cx.theme().primary;
+        let sidebar = div()
+            .id("sidebar-project-drop")
             .h_full()
             .flex_shrink_0()
             .overflow_hidden()
             .child(self.render_sidebar(window, cx))
+            .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| {
+                style.border_1().border_color(drop_border)
+            })
+            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
+                cx.stop_propagation();
+                this.drop_project_paths(paths.paths(), window, cx);
+            }));
+        if instant {
+            return sidebar.w(px(self.sidebar_width)).into_any_element();
+        }
+        let width = self.sidebar_closing_width.unwrap_or(self.sidebar_width);
+        let (from, to) = if collapsed { (width, 0.0) } else { (0.0, width) };
+        sidebar
             .with_animation(
                 ("sidebar-fold", collapsed as usize),
                 Animation::new(Duration::from_millis(240)).with_easing(ease_out_quint()),

@@ -3,6 +3,7 @@
 use gpui::{App, AppContext as _, Entity, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
 
+use crate::display::side_panel::GitLocation;
 use crate::gpui_shell::config::ui_language;
 use crate::i18n::{Message, UiLanguage};
 
@@ -11,6 +12,8 @@ pub(in crate::gpui_shell::workspace) struct CommitInput {
     language: UiLanguage,
     pending: Option<PendingCommit>,
     _events: Option<Subscription>,
+    location: Option<GitLocation>,
+    drafts: Vec<(GitLocation, String)>,
 }
 
 struct PendingCommit {
@@ -108,7 +111,7 @@ impl CommitInput {
                 .soft_wrap(true)
                 .placeholder(language.text(Message::VcsCommitPlaceholder))
         });
-        Self { input, language, pending: None, _events: None }
+        Self { input, language, pending: None, _events: None, location: None, drafts: Vec::new() }
     }
 
     pub(super) fn sync_language(&mut self, window: &mut Window, cx: &mut App) {
@@ -139,22 +142,50 @@ impl super::NebulaWorkspace {
 
     pub(super) fn sync_vcs_commit(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
         use std::sync::mpsc::TryRecvError;
-        let success =
+        let result =
             match self.git_commit_input.pending.as_ref().map(|pending| pending.result.try_recv()) {
-                Some(Ok(success)) => success,
-                Some(Err(TryRecvError::Disconnected)) => {
-                    self.git_commit_input.pending = None;
-                    return;
-                },
-                _ => return,
+                Some(Ok(success)) => Some(success),
+                Some(Err(TryRecvError::Disconnected)) => Some(false),
+                _ => None,
             };
-        let Some(pending) = self.git_commit_input.pending.take() else { return };
-        if success
-            && self.side_panel.git_location().as_ref() == Some(&pending.location)
-            && self.git_commit_input.input.read(cx).value().as_ref() == pending.message.as_str()
+        if let Some(success) = result
+            && let Some(pending) = self.git_commit_input.pending.take()
+            && success
         {
-            self.git_commit_input.input.update(cx, |input, cx| input.set_value("", window, cx));
+            if self.git_commit_input.location.as_ref() == Some(&pending.location) {
+                if self.git_commit_input.input.read(cx).value().as_ref() == pending.message.as_str()
+                {
+                    self.git_commit_input
+                        .input
+                        .update(cx, |input, cx| input.set_value("", window, cx));
+                }
+            } else {
+                self.git_commit_input.drafts.retain(|(location, draft)| {
+                    location != &pending.location || draft != &pending.message
+                });
+            }
         }
+        let location = self.side_panel.git_location().or_else(|| {
+            self.side_panel.vcs_root().map(|root| GitLocation::Local { root: root.to_owned() })
+        });
+        let commit = &mut self.git_commit_input;
+        if commit.location == location {
+            return;
+        }
+        if let Some(previous) = commit.location.take() {
+            let draft = commit.input.read(cx).value().to_string();
+            commit.drafts.retain(|(location, _)| location != &previous);
+            if !draft.is_empty() {
+                commit.drafts.push((previous, draft));
+            }
+        }
+        let draft = location
+            .as_ref()
+            .and_then(|location| commit.drafts.iter().find(|(key, _)| key == location))
+            .map(|(_, draft)| draft.clone())
+            .unwrap_or_default();
+        commit.location = location;
+        commit.input.update(cx, |input, cx| input.set_value(draft, window, cx));
     }
 
     fn submit_vcs_commit_with_push(
@@ -207,6 +238,10 @@ impl super::NebulaWorkspace {
         let root = self.side_panel.vcs_root().map(std::path::Path::to_path_buf);
         let button_root = root.clone();
         let menu_root = root.clone();
+        let remote_only = is_git
+            && self.side_panel.git_snapshot().is_some_and(|info| {
+                info.staged.is_empty() && info.unstaged.is_empty() && info.conflicts.is_empty()
+            });
         let empty = self.git_commit_input.input.read(cx).value().trim().is_empty();
         let hint = language.text(if !is_git {
             Message::VcsCommit
@@ -290,7 +325,113 @@ impl super::NebulaWorkspace {
                     ))
                     .child(Input::new(&self.git_commit_input.input).w_full()),
             )
-            .child(action)
+            .child(if remote_only { self.render_vcs_primary_remote(cx) } else { action })
+            .when(is_git && !remote_only, |body| body.child(self.render_vcs_remote_actions(cx)))
+            .into_any_element()
+    }
+
+    fn render_vcs_primary_remote(&self, cx: &gpui::Context<Self>) -> gpui::AnyElement {
+        use super::*;
+        let language = crate::gpui_shell::config::ui_language(cx);
+        let info = self.side_panel.git_snapshot();
+        let push = info.as_ref().is_some_and(|info| info.can_push());
+        let pull = info.as_ref().is_some_and(|info| info.upstream.is_some() && info.behind > 0);
+        let message = if info
+            .as_ref()
+            .is_some_and(|info| info.branch.is_empty() || info.branch == "(detached)")
+        {
+            Message::VcsNoBranch
+        } else if pull {
+            Message::VcsPull
+        } else if push && info.as_ref().is_some_and(|info| info.upstream.is_none()) {
+            Message::GitControlsPublishBranch
+        } else if push {
+            Message::VcsPush
+        } else if info.as_ref().is_none_or(|info| info.upstream.is_none()) {
+            Message::GitControlsCommitFirst
+        } else {
+            Message::GitControlsUpToDate
+        };
+        let location = self.side_panel.git_location();
+        Button::new("git-primary-remote")
+            .primary()
+            .small()
+            .w_full()
+            .label(language.text(message))
+            .tooltip(language.text(if pull {
+                Message::GitControlsPullFirst
+            } else if message == Message::GitControlsUpToDate {
+                Message::GitControlsTrackingHint
+            } else {
+                message
+            }))
+            .disabled(self.side_panel.op_running() || (!push && !pull))
+            .loading(self.side_panel.op_running())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if location.is_some() && this.side_panel.git_location() == location {
+                    if pull {
+                        this.side_panel.git_pull();
+                    } else {
+                        this.side_panel.git_push();
+                    }
+                    cx.notify();
+                }
+            }))
+            .into_any_element()
+    }
+
+    fn render_vcs_remote_actions(&self, cx: &gpui::Context<Self>) -> gpui::AnyElement {
+        use super::*;
+        let language = crate::gpui_shell::config::ui_language(cx);
+        let info = self.side_panel.git_snapshot();
+        let publish = info.as_ref().is_some_and(|info| info.upstream.is_none());
+        let busy = self.side_panel.op_running();
+        let location = self.side_panel.git_location();
+        let push_location = location.clone();
+        let label = if publish {
+            language.text(Message::GitControlsPublishBranch).to_owned()
+        } else {
+            language.format(
+                Message::VcsPushAhead,
+                &[("count", &info.as_ref().map_or(0, |i| i.ahead).to_string())],
+            )
+        };
+        h_flex()
+            .w_full()
+            .gap_1()
+            .child(
+                Button::new("git-publish-push")
+                    .small()
+                    .flex_1()
+                    .label(label)
+                    .tooltip(language.text(if publish {
+                        Message::GitControlsPublishHint
+                    } else {
+                        Message::VcsPush
+                    }))
+                    .disabled(busy || !info.as_ref().is_some_and(|info| info.can_push()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if push_location.is_some()
+                            && this.side_panel.git_location() == push_location
+                        {
+                            this.side_panel.git_push();
+                            cx.notify();
+                        }
+                    })),
+            )
+            .child(
+                Button::new("git-pull-updates")
+                    .ghost()
+                    .small()
+                    .label(language.text(Message::VcsPull))
+                    .disabled(busy || publish)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if location.is_some() && this.side_panel.git_location() == location {
+                            this.side_panel.git_pull();
+                            cx.notify();
+                        }
+                    })),
+            )
             .into_any_element()
     }
 }

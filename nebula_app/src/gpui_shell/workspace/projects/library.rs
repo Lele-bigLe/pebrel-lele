@@ -38,7 +38,7 @@ impl NebulaWorkspace {
         let name = if project.name.is_empty() { fallback } else { project.name.clone() };
         let name =
             if project.group.is_empty() { name } else { format!("{} / {name}", project.group) };
-        if project.favorite { format!("★ {name}") } else { name }
+        name
     }
 
     pub(in crate::gpui_shell::workspace) fn queue_project_change(
@@ -108,14 +108,11 @@ impl NebulaWorkspace {
         });
         name.update(cx, |input, cx| input.set_value(project.name.clone(), window, cx));
         group.update(cx, |input, cx| input.set_value(project.group.clone(), window, cx));
-        let favorite = cx.new(|_| project.favorite);
         let owner = cx.entity().downgrade();
         let focus = name.clone();
         window.open_dialog(cx, move |dialog, window, cx| {
             let name = name.clone();
             let group = group.clone();
-            let favorite = favorite.clone();
-            let toggle = favorite.clone();
             let saved = project.clone();
             let owner = owner.clone();
             center_modal_dialog(dialog, window, 330.0)
@@ -123,19 +120,6 @@ impl NebulaWorkspace {
                 .child(div().min_w_0().truncate().child(project.root.display().to_string()))
                 .child(Input::new(&name).w_full())
                 .child(Input::new(&group).w_full())
-                .child(
-                    Button::new("project-favorite")
-                        .ghost()
-                        .label(language.text(Message::ProjectFavorite))
-                        .selected(*favorite.read(cx))
-                        .on_click(move |_, window, cx| {
-                            toggle.update(cx, |value, cx| {
-                                *value = !*value;
-                                cx.notify();
-                            });
-                            window.refresh();
-                        }),
-                )
                 .footer(
                     DialogFooter::new()
                         .child(div().flex_1())
@@ -157,7 +141,6 @@ impl NebulaWorkspace {
                     let mut project = saved.clone();
                     project.name = name.read(cx).value().to_string();
                     project.group = group.read(cx).value().to_string();
-                    project.favorite = *favorite.read(cx);
                     if let Some(owner) = owner.upgrade() {
                         owner.update(cx, |this, cx| {
                             this.queue_project_change(Change::Edit(project), cx)

@@ -1,5 +1,8 @@
 {
   "turn_changes": {
+    "return_session": "Back to session",
+    "unknown": "Unknown state",
+    "pending": "This turn is still running. Completed native file patches may become available after it finishes; go back to all turns and refresh.",
     "title": "Turn changes",
     "hint": "Read the patches recorded in this Codex conversation, newest turn first.",
     "identifying": "Waiting for the native Codex conversation identity.",
@@ -14,7 +17,9 @@
     "interrupted": "Interrupted",
     "empty": "No persisted turns found. Refresh after Codex saves a turn.",
     "no_patch": "No completed file patches were recorded for this turn. Changes made through shell commands or external tools may not include per-turn patches.",
-    "unavailable": "The native Codex CLI or its session directory is unavailable.",
+    "unavailable": "Could not start the native Codex CLI. Check that Codex is installed and available to Pebrel.",
+    "missing_home": "Could not locate the Codex configuration directory. Check CODEX_HOME or your user directory.",
+    "rejected": "Codex rejected the history request (RPC {code}). Check that the conversation still exists in this Codex configuration directory.",
     "unsupported": "This Codex version does not support paginated turn history. Update Codex and try again.",
     "failed": "Could not read turn changes. Refresh to retry; this conversation may not yet be persisted or readable by the current Codex version.",
     "step": "Edit {index} of {count} in this turn · compare each edit separately",
@@ -147,6 +152,13 @@
     "select_hint": "Click a line or Shift-click a range to add a comment"
   },
   "git_controls": {
+    "up_to_date": "No pending commits",
+    "commit_first": "Commit before publishing",
+    "tracking_hint": "Based on the local tracking branch. Use Fetch in the repository menu to get the latest remote state.",
+    "fetch": "Fetch remote updates",
+    "pull_first": "Pull fast-forward updates first, then push if needed. Diverged branches need an explicit merge or rebase.",
+    "publish_branch": "Publish branch",
+    "publish_hint": "Publish the current branch using Git's configured push remote and set its upstream.",
     "view_files": "Files",
     "view_history": "History",
     "commit_options": "Commit actions",
@@ -205,6 +217,7 @@
     "unavailable": "Worktree directory unavailable"
   },
   "tasks": {
+    "next_unread": "Go to the next unread notification across all projects",
     "title": "Tasks and notifications",
     "hint": "Tasks and notifications in this window",
     "unread": "Unread",
@@ -219,6 +232,10 @@
     "all_projects": "Include all projects"
   },
   "workbench": {
+    "return_session": "Return to the previous session or split",
+    "new_terminal": "New terminal",
+    "split_terminal": "Split terminal",
+    "find_session": "Find sessions across projects",
     "view_changes": "View changes",
     "files": "Browse project files",
     "choose_file": "Select a file on the left to review its changes.",
@@ -396,6 +413,7 @@
     "ungrouped": "Ungrouped",
     "add": "Add project…",
     "choose_directory": "Choose a project folder…",
+    "drop_folders_only": "Drop an accessible folder to add a project.",
     "sessions": "Sessions",
     "move_session": "Move to project",
     "menu_item": "{name} · {count}",

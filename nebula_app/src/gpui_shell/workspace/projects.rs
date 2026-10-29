@@ -10,6 +10,7 @@ use crate::i18n::Message;
 use crate::runtime_api::tabs::TabId;
 
 mod library;
+mod navigation;
 
 #[derive(Clone, Default, PartialEq, Eq)]
 pub(super) enum ProjectFilter {
@@ -128,6 +129,12 @@ pub(super) struct ProjectState {
     pub(super) expanded_sessions: std::collections::HashSet<TabId>,
     pub(super) documents_collapsed: bool,
     pub(super) session_scroll: gpui::ScrollHandle,
+    pub(super) overview_scroll: gpui::UniformListScrollHandle,
+    pub(super) overview_focus: Option<(TabId, Option<u64>)>,
+    recent_sessions: Vec<TabId>,
+    pub(super) collapsed_projects: std::collections::HashSet<Option<PathBuf>>,
+    pub(super) expanded_project_documents: std::collections::HashSet<Option<PathBuf>>,
+    previous_focus: Option<(TabId, u64)>,
 }
 
 // Use the shortest unique path suffix, preserving equal-named projects without
@@ -166,6 +173,18 @@ pub(super) fn project_menu_item(label: String, full_path: String) -> PopupMenuIt
 }
 
 impl NebulaWorkspace {
+    pub(super) fn remember_project_session(&mut self) {
+        if !self.tabs.get(self.active).is_some_and(WorkspaceTab::is_terminal) {
+            return;
+        }
+        let current = self.meta(self.active).runtime_id.clone();
+        let tabs = &self.tab_meta;
+        self.projects
+            .recent_sessions
+            .retain(|id| id != &current && tabs.iter().any(|meta| &meta.runtime_id == id));
+        self.projects.recent_sessions.push(current);
+    }
+
     pub(super) fn add_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let ProjectFilter::Root(root) = &self.projects.filter {
             self.add_terminal_at(Some(root.clone()), None, window, cx);
@@ -244,10 +263,19 @@ impl NebulaWorkspace {
         entries.sort_by_key(|(root, _)| {
             let project = self.project_metadata(root);
             (
-                project.is_none_or(|p| !p.favorite),
                 project.map(|p| p.group.clone()).unwrap_or_default(),
                 std::cmp::Reverse(project.map_or(0, |p| p.last_opened)),
             )
+        });
+        entries
+    }
+
+    pub(super) fn project_overview_entries(&self) -> Vec<(PathBuf, usize)> {
+        let mut entries = self.project_entries();
+        // Unlike the recent-project menu, the overview must not jump after Open.
+        entries.sort_by_key(|(root, _)| {
+            let project = self.project_metadata(root);
+            (project.map(|project| project.group.clone()).unwrap_or_default(), root.clone())
         });
         entries
     }
@@ -258,6 +286,7 @@ impl NebulaWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.remember_project_session();
         if let Some(drag) = self.tab_drag.take() {
             windowing::clear_cross_window_drag_target(drag.cross_window_target, cx);
         }
@@ -265,7 +294,15 @@ impl NebulaWorkspace {
         self.projects.filter = filter;
         self.tabs_scroll = 0;
         let indices = self.sidebar_tab_indices();
-        if let Some(&ix) = indices.iter().find(|&&ix| ix == self.active).or_else(|| indices.first())
+        let recent = self.projects.recent_sessions.iter().rev().find_map(|id| {
+            indices.iter().copied().find(|&index| &self.meta(index).runtime_id == id)
+        });
+        if let Some(ix) = indices
+            .iter()
+            .copied()
+            .find(|&ix| ix == self.active)
+            .or(recent)
+            .or_else(|| indices.first().copied())
         {
             self.activate_tab(ix, window, cx);
             self.reveal_active_tab();
@@ -303,6 +340,55 @@ impl NebulaWorkspace {
         self.activate_tab(ix, window, cx);
         self.reveal_active_tab();
         self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn drop_project_paths(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.projects.picker.is_some() || paths.is_empty() {
+            return;
+        }
+        let paths = paths.to_vec();
+        let filter = self.projects.filter.clone();
+        let active = self.tab_meta.get(self.active).map(|meta| meta.runtime_id.clone());
+        // External paths can include files; filesystem checks stay off the UI thread.
+        let work = cx.background_executor().spawn(async move {
+            let mut roots: Vec<PathBuf> = Vec::new();
+            for path in paths {
+                if path.is_absolute()
+                    && path.is_dir()
+                    && !roots.iter().any(|root| crate::project_library::same_root(root, &path))
+                {
+                    roots.push(path);
+                }
+            }
+            roots
+        });
+        self.projects.picker = Some(cx.spawn_in(window, async move |this, cx| {
+            let roots = work.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.projects.picker = None;
+                let Some(first) = roots.first().cloned() else {
+                    let language = crate::gpui_shell::config::ui_language(cx);
+                    window.push_notification(
+                        Notification::error(language.text(Message::ProjectDropFoldersOnly)),
+                        cx,
+                    );
+                    return;
+                };
+                this.queue_project_change(crate::project_library::Change::Remember(roots), cx);
+                // A slow directory check must not replace a newer project/session selection.
+                if this.projects.filter == filter
+                    && this.tab_meta.get(this.active).map(|meta| meta.runtime_id.clone()) == active
+                {
+                    this.select_project(ProjectFilter::Root(first), window, cx);
+                }
+            });
+        }));
         cx.notify();
     }
 
@@ -539,8 +625,28 @@ impl NebulaWorkspace {
                             .scrollable(true)
                     }),
             )
+            .child(
+                Button::new("workspace-return-session")
+                    .ghost().small().icon(IconName::ArrowLeft)
+                    .disabled(!self.previous_focus_available())
+                    .tooltip(language.text(Message::WorkbenchReturnSession))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.return_to_previous_session(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("workspace-find-session")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Search)
+                    .tooltip(language.text(Message::WorkbenchFindSession))
+                    .aria_label(language.text(Message::WorkbenchFindSession))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_session_switcher(window, cx);
+                    })),
+            )
             .child(self.render_history_button(cx))
-            .when(!tree_mode, |row| row.child(self.render_task_button(cx)))
+            .child(self.render_task_button(cx))
     }
 
     pub(super) fn project_assignment_item(

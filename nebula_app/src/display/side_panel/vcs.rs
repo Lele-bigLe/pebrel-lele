@@ -13,6 +13,11 @@ fn git_commit_args(message: &str) -> Vec<String> {
     vec!["commit".into(), "-m".into(), message.to_owned()]
 }
 
+fn git_push_args() -> Vec<String> {
+    // Let Git select the configured push remote; first publication also records upstream.
+    vec!["-c".into(), "push.autoSetupRemote=true".into(), "push".into()]
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SvnMutation {
     Add(Vec<PathBuf>),
@@ -308,13 +313,12 @@ impl SidePanel {
                         Ok(out) if out.status.success() => (true, PanelNotice::default()),
                         Ok(out) => {
                             let err = String::from_utf8_lossy(&out.stderr);
-                            let notice = err
-                                .lines()
-                                .find(|line| !line.trim().is_empty())
-                                .map(|line| PanelNotice::Raw(line.to_owned()))
-                                .unwrap_or_else(|| {
-                                    PanelNotice::CommandFailed(display_name.clone())
-                                });
+                            let detail = err.trim().chars().take(4096).collect::<String>();
+                            let notice = if detail.is_empty() {
+                                PanelNotice::CommandFailed(display_name.clone())
+                            } else {
+                                PanelNotice::Raw(detail)
+                            };
                             (false, notice)
                         },
                         Err(error) => (false, PanelNotice::Raw(format!("{display_name}: {error}"))),
@@ -644,16 +648,15 @@ impl SidePanel {
         }
         let mut steps = vec![git_commit_args(message)];
         if push_after {
-            steps.push(vec!["push".into()]);
+            steps.push(git_push_args());
         }
         self.spawn_git_batch(steps)
     }
 
-    /// Push button — only enabled with committed-but-unpushed work (`ahead`).
-    /// SVN 的 `ahead` 恒 0（提交即发布），按钮自然不亮。
+    /// A branch without upstream can be published even when ahead is unavailable.
     pub fn git_push(&mut self) {
-        if self.git.as_ref().is_some_and(|g| g.ahead > 0) && !self.op_running() {
-            self.spawn_git(vec!["push".into()]);
+        if self.git.as_ref().is_some_and(|g| g.can_push()) && !self.op_running() {
+            self.spawn_git(git_push_args());
         }
     }
 
@@ -667,6 +670,12 @@ impl SidePanel {
             Some(VcsKind::Git) => self.spawn_git(git_pull_args()),
             Some(VcsKind::Svn) => self.spawn_svn_mutation(SvnMutation::Update),
             Some(VcsKind::SvnRepository) | None => {},
+        }
+    }
+
+    pub fn git_fetch(&mut self) {
+        if self.vcs() == Some(VcsKind::Git) && !self.op_running() {
+            self.spawn_git(vec!["fetch".into()]);
         }
     }
 
@@ -1006,8 +1015,13 @@ pub(crate) fn collect_git_info(run: impl Fn(&[&str]) -> Option<String>) -> Optio
     let mut args = STATUS_ARGS.to_vec();
     args.push("--untracked-files=all");
     let status = parse_status(&run(&args)?).ok()?;
-    let mut info =
-        GitInfo { branch: status.branch, ahead: status.ahead as _, ..GitInfo::default() };
+    let mut info = GitInfo {
+        branch: status.branch,
+        ahead: status.ahead,
+        behind: status.behind,
+        upstream: status.upstream,
+        ..GitInfo::default()
+    };
     for entry in status.entries {
         if entry.conflict {
             info.conflicts.push(('U', entry.path.clone()));

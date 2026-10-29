@@ -131,6 +131,8 @@ pub struct GitInfo {
     /// Commits ahead of upstream — what a push would publish. 0 = nothing to
     /// push (the push button keys off this: only committed work is pushable).
     pub ahead: u32,
+    pub behind: u32,
+    pub upstream: Option<String>,
     /// Worktree changes not yet staged (`??` counts here as `?`).
     pub unstaged: Vec<(char, String)>,
     /// Index changes ready to commit.
@@ -152,6 +154,13 @@ pub struct GitInfo {
 }
 
 impl GitInfo {
+    pub(crate) fn can_push(&self) -> bool {
+        self.vcs == VcsKind::Git
+            && self.branch != "(detached)"
+            && !self.branch.is_empty()
+            && (self.ahead > 0 || (self.upstream.is_none() && !self.history.is_empty()))
+    }
+
     pub fn svn_add_ready(&self) -> bool {
         self.vcs == VcsKind::Svn && self.unstaged.iter().any(|(status, _)| *status == '?')
     }

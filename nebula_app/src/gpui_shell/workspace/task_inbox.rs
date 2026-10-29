@@ -60,7 +60,8 @@ impl NebulaWorkspace {
             && !self.task_inbox.open
             && !self.command_palette_open
             && !self.command_manager_open
-            && !self.usage_panel_open();
+            && !self.usage_panel_open()
+            && !self.turn_review_visible();
         let Some(tab) = self.tab_of_pane(pane) else { return };
         let project = self.tab_meta.get(tab).and_then(|meta| meta.project_root.clone());
         let (title, body) = notification.raw_toast_text();
@@ -103,6 +104,7 @@ impl NebulaWorkspace {
             || self.command_manager_open
             || self.task_inbox.open
             || self.usage_panel_open()
+            || self.turn_review_visible()
         {
             return;
         }
@@ -251,9 +253,9 @@ impl NebulaWorkspace {
             .task_inbox
             .entries
             .iter()
-            .filter(|entry| !entry.read && self.projects.filter.matches(entry.project.as_ref()))
+            .filter(|entry| !entry.read)
             .count();
-        Button::new("workspace-tasks")
+        h_flex().gap_0().child(Button::new("workspace-tasks")
             .ghost()
             .small()
             .icon(IconName::Bell)
@@ -263,7 +265,19 @@ impl NebulaWorkspace {
             .when(unread > 0, |button| {
                 button.label(if unread > 99 { "99+".into() } else { unread.to_string() })
             })
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_task_inbox(window, cx)))
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_task_inbox(window, cx))))
+            .when(unread > 0, |row| row.child(
+                Button::new("workspace-next-unread").ghost().xsmall().icon(IconName::ChevronRight)
+                    .tooltip(language.text(Message::TasksNextUnread))
+                    .disabled(!self.task_inbox.entries.iter().any(|entry| !entry.read && self.tab_of_pane(entry.pane).is_some()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let pane = this.task_inbox.entries.iter().find(|entry| !entry.read && this.tab_of_pane(entry.pane).is_some()).map(|entry| entry.pane);
+                        if let Some(pane) = pane && let Some(tab) = this.tab_of_pane(pane) {
+                            this.dismiss_task_inbox();
+                            this.reveal_session_pane(tab, pane, window, cx);
+                        }
+                    }))
+            ))
     }
 
     pub(super) fn render_task_inbox(
@@ -325,8 +339,7 @@ impl NebulaWorkspace {
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     if let Some(tab) = this.tab_of_pane(pane) {
                                         this.dismiss_task_inbox();
-                                        this.activate_tab(tab, window, cx);
-                                        this.focus_pane(tab, pane, window, cx);
+                                        this.reveal_session_pane(tab, pane, window, cx);
                                         for entry in &mut this.task_inbox.entries {
                                             if entry.pane == pane {
                                                 entry.read = true;

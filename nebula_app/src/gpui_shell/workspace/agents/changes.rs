@@ -1,4 +1,4 @@
-//! A dialog owns one immutable thread target; it never resumes the CLI session.
+//! A workspace review owns one immutable thread target; it never resumes the CLI.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -6,33 +6,179 @@ use crate::ai_sessions::changes::{self, Edit, Error, Turn};
 use crate::gpui_shell::code_tab::CodeTabView;
 use crate::gpui_shell::prelude::*;
 use crate::i18n::Message;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{App, AppContext as _, Context, Entity, ParentElement as _, Styled as _, Window, px};
+use gpui::{InteractiveElement as _, IntoElement as _, div};
 
 mod panel;
 
-pub(super) fn open(thread: String, root: PathBuf, window: &mut Window, cx: &mut App) {
-    let panel = cx.new(|cx| {
-        let mut panel = Changes {
-            thread,
-            root,
-            turns: Vec::new(),
-            next: None,
-            selected: None,
-            task: None,
-            error: None,
-            turns_scroll: gpui::UniformListScrollHandle::new(),
-            files_scroll: gpui::UniformListScrollHandle::new(),
+pub(in crate::gpui_shell::workspace) struct Review {
+    panel: Entity<Changes>,
+    tab: crate::runtime_api::tabs::TabId,
+    pane: u64,
+    open: bool,
+}
+
+impl super::super::NebulaWorkspace {
+    pub(in crate::gpui_shell::workspace) fn open_turn_review(
+        &mut self,
+        thread: String,
+        root: PathBuf,
+        pane: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_of_pane(pane).filter(|index| *index == self.active) else {
+            return;
         };
-        panel.load_turns(None, cx);
-        panel
-    });
-    let language = crate::gpui_shell::config::ui_language(cx);
-    window.open_dialog(cx, move |dialog, window, _| {
-        dialog
-            .title(language.text(Message::TurnChangesTitle))
-            .w(px((f32::from(window.viewport_size().width) - 48.0).clamp(280.0, 1200.0)))
-            .child(panel.clone())
-    });
+        let current =
+            self.tabs[index].focused_view().and_then(|view| view.read(cx).session_agent());
+        if current.is_none_or(|mut agent| {
+            agent.normalize_identity();
+            agent.source != "codex" || agent.session_id.as_deref() != Some(thread.as_str())
+        }) {
+            return;
+        }
+        let tab = self.meta(index).runtime_id;
+        let reusable = self.workbench.turn_review.as_ref().is_some_and(|review| {
+            let panel = review.panel.read(cx);
+            review.tab == tab && review.pane == pane && panel.thread == thread && panel.root == root
+        });
+        if !reusable {
+            let panel = cx.new(|cx| {
+                let mut panel = Changes {
+                    thread,
+                    root,
+                    turns: Vec::new(),
+                    next: None,
+                    selected: None,
+                    task: None,
+                    error: None,
+                    focus: cx.focus_handle(),
+                    turns_scroll: gpui::UniformListScrollHandle::new(),
+                    files_scroll: gpui::UniformListScrollHandle::new(),
+                };
+                panel.load_turns(None, cx);
+                panel
+            });
+            self.workbench.turn_review = Some(Review { panel, tab, pane, open: true });
+        } else if let Some(review) = &mut self.workbench.turn_review {
+            review.open = true;
+        }
+        self.side_panel.open = false;
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    pub(in crate::gpui_shell::workspace) fn turn_review_visible(&self) -> bool {
+        !self.settings_open && self.workbench.turn_review.as_ref().is_some_and(|review| {
+            review.open && self.tab_meta.get(self.active).is_some_and(|meta| meta.runtime_id == review.tab)
+                && matches!(self.tabs.get(self.active), Some(super::super::WorkspaceTab::Terminal { focused, panes, .. })
+                    if *focused == review.pane && panes.iter().any(|pane| pane.id == review.pane))
+        })
+    }
+
+    pub(in crate::gpui_shell::workspace) fn turn_review_view(&self) -> Option<Entity<Changes>> {
+        self.workbench
+            .turn_review
+            .as_ref()
+            .filter(|_| self.turn_review_visible())
+            .map(|review| review.panel.clone())
+    }
+
+    pub(in crate::gpui_shell::workspace) fn turn_review_focus(
+        &self,
+        cx: &App,
+    ) -> Option<gpui::FocusHandle> {
+        self.turn_review_view().map(|view| view.read(cx).focus.clone())
+    }
+
+    pub(in crate::gpui_shell::workspace) fn hide_turn_review(&mut self) {
+        if let Some(review) = &mut self.workbench.turn_review {
+            review.open = false;
+        }
+    }
+
+    pub(in crate::gpui_shell::workspace) fn close_turn_review(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.hide_turn_review();
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    pub(in crate::gpui_shell::workspace) fn render_turn_review_header(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let language = crate::gpui_shell::config::ui_language(cx);
+        let panel = self.turn_review_view();
+        h_flex()
+            .h(px(60.0))
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .px_4()
+            .gap_3()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .font_semibold()
+                            .child(language.text(Message::TurnChangesTitle)),
+                    )
+                    .child(
+                        div().truncate().text_xs().text_color(cx.theme().muted_foreground).child(
+                            self.workbench
+                                .turn_review
+                                .as_ref()
+                                .map(|review| review.panel.read(cx).root.display().to_string())
+                                .unwrap_or_default(),
+                        ),
+                    ),
+            )
+            .child(
+                Button::new("turn-review-return")
+                    .ghost()
+                    .small()
+                    .icon(IconName::ArrowLeft)
+                    .label(language.text(Message::TurnChangesReturnSession))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.close_turn_review(window, cx)),
+                    ),
+            )
+            .when_some(panel, |row, panel| {
+                let busy = panel.read(cx).task.is_some();
+                row.child(
+                    Button::new("turn-review-refresh")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Redo)
+                        .tooltip(language.text(Message::UsageRefresh))
+                        .disabled(busy)
+                        .loading(busy)
+                        .on_click(move |_, _, cx| {
+                            panel.update(cx, |panel, cx| {
+                                if panel.task.is_none() {
+                                    panel.selected = None;
+                                    panel.load_turns(None, cx);
+                                }
+                            })
+                        }),
+                )
+            })
+            .into_any_element()
+    }
 }
 
 struct FileEdits {
@@ -50,7 +196,7 @@ struct Selection {
     viewer: Option<Entity<CodeTabView>>,
 }
 
-struct Changes {
+pub(in crate::gpui_shell::workspace) struct Changes {
     thread: String,
     root: PathBuf,
     turns: Vec<Turn>,
@@ -58,6 +204,7 @@ struct Changes {
     selected: Option<Selection>,
     task: Option<gpui::Task<()>>,
     error: Option<Error>,
+    focus: gpui::FocusHandle,
     turns_scroll: gpui::UniformListScrollHandle,
     files_scroll: gpui::UniformListScrollHandle,
 }

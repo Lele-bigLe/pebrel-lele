@@ -1,14 +1,14 @@
 use super::*;
 use crate::gpui_shell::widgets::{SCROLLBAR_GUTTER, scrollbar_gutter};
+use gpui::InteractiveElement as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{IntoElement, ParentElement as _, Render, SharedString, Styled as _, div, uniform_list};
 
 impl Render for Changes {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let language = crate::gpui_shell::config::ui_language(cx);
         let busy = self.task.is_some();
-        let height = (f32::from(window.viewport_size().height) - 190.0).clamp(220.0, 700.0);
-        let mut body = v_flex().w_full().h(px(height)).min_h_0().gap_2();
+        let mut body = v_flex().size_full().min_h_0().gap_2().track_focus(&self.focus);
         let mut header = h_flex().w_full().min_w_0().gap_2();
         if let Some(selected) = &self.selected {
             let turn = &self.turns[selected.turn];
@@ -56,22 +56,22 @@ impl Render for Changes {
         }
         body = body.child(header);
         if let Some(error) = &self.error {
-            let key = match error {
-                Error::Unavailable | Error::MissingHome => Message::TurnChangesUnavailable,
-                Error::Unsupported => Message::TurnChangesUnsupported,
-                Error::TooLarge => Message::DiffTooLarge,
-                Error::Transport | Error::InvalidResponse => Message::TurnChangesFailed,
+            let detail = match error {
+                Error::Unavailable => language.text(Message::TurnChangesUnavailable).to_owned(),
+                Error::MissingHome => language.text(Message::TurnChangesMissingHome).to_owned(),
+                Error::Unsupported => language.text(Message::TurnChangesUnsupported).to_owned(),
+                Error::TooLarge => language.text(Message::DiffTooLarge).to_owned(),
+                Error::Rejected(code) => {
+                    language.format(Message::TurnChangesRejected, &[("code", &code.to_string())])
+                },
+                Error::Transport | Error::InvalidResponse => {
+                    language.text(Message::TurnChangesFailed).to_owned()
+                },
             };
             body = body.child(
                 h_flex()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_sm()
-                            .text_color(cx.theme().danger)
-                            .child(language.text(key)),
-                    )
+                    .child(div().flex_1().text_sm().text_color(cx.theme().danger).child(detail))
                     .when(self.selected.is_some(), |row| {
                         row.child(
                             Button::new("turn-edits-retry")
@@ -149,7 +149,8 @@ impl Changes {
                                         "inProgress" => Message::TurnChangesRunning,
                                         "failed" => Message::TurnChangesTurnFailed,
                                         "interrupted" => Message::TurnChangesInterrupted,
-                                        _ => Message::TurnChangesCompleted,
+                                        "completed" => Message::TurnChangesCompleted,
+                                        _ => Message::TurnChangesUnknown,
                                     };
                                     h_flex()
                                         .h(px(72.0))
@@ -217,13 +218,13 @@ impl Changes {
         let busy = self.task.is_some();
         let mut body = v_flex().flex_1().min_h_0().gap_2();
         if selected.files.is_empty() && !busy && self.error.is_none() && selected.next.is_none() {
-            body = body.child(
-                div()
-                    .p_3()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(language.text(Message::TurnChangesNoPatch)),
-            );
+            body = body.child(div().p_3().text_sm().text_color(cx.theme().muted_foreground).child(
+                language.text(if self.turns[selected.turn].status == "inProgress" {
+                    Message::TurnChangesPending
+                } else {
+                    Message::TurnChangesNoPatch
+                }),
+            ));
         }
         if selected.next.is_some() {
             body = body.child(
@@ -304,9 +305,17 @@ impl Changes {
                                             let selected = this.selected.as_ref().unwrap();
                                             let file = &selected.files[index];
                                             let path = this.path_label(&file.path);
+                                            let name = Path::new(&path)
+                                                .file_name()
+                                                .map(|name| name.to_string_lossy().into_owned())
+                                                .unwrap_or_else(|| path.clone());
+                                            let directory = Path::new(&path)
+                                                .parent()
+                                                .map(|parent| parent.display().to_string())
+                                                .unwrap_or_default();
                                             let hint = file.path.clone();
                                             div()
-                                                .h(px(38.0))
+                                                .h(px(44.0))
                                                 .w_full()
                                                 .min_w_0()
                                                 .px_1()
@@ -317,7 +326,29 @@ impl Changes {
                                                     .ghost()
                                                     .small()
                                                     .w_full()
-                                                    .label(path)
+                                                    .h(px(42.0))
+                                                    .aria_label(path)
+                                                    .child(
+                                                        v_flex()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .text_left()
+                                                            .child(
+                                                                div()
+                                                                    .truncate()
+                                                                    .text_sm()
+                                                                    .child(name),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .truncate()
+                                                                    .text_xs()
+                                                                    .text_color(
+                                                                        cx.theme().muted_foreground,
+                                                                    )
+                                                                    .child(directory),
+                                                            ),
+                                                    )
                                                     .tooltip(hint)
                                                     .selected(selected.file == index)
                                                     .on_click(cx.listener(

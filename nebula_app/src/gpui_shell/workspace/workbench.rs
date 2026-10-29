@@ -15,6 +15,7 @@ pub(super) struct State {
     last_active: Option<TabId>,
     was_changes: bool,
     positions: Vec<DiffPosition>,
+    pub(super) turn_review: Option<super::agents::changes::Review>,
 }
 
 impl NebulaWorkspace {
@@ -34,6 +35,7 @@ impl NebulaWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.hide_turn_review();
         let diff = matches!(self.tabs.get(index), Some(WorkspaceTab::Code { view, .. }) if view.read(cx).review_location().is_some());
         if self.workbench_changes(cx) && !diff {
             self.side_panel.open = false;
@@ -96,6 +98,7 @@ impl NebulaWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.hide_turn_review();
         self.tabs_section_collapsed = false;
         if self.side_panel.view == PanelView::Git {
             self.side_panel.open = false;
@@ -212,7 +215,26 @@ impl NebulaWorkspace {
             )
             .dropdown_menu(move |mut menu, _, cx| {
                 let current = Self::new_session_target(cx);
-                menu = menu.label(language.text(Message::SessionTreeDefault));
+                for target in nebula_settings::NewSessionTarget::ALL {
+                    let owner = owner.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(language.format(
+                            Message::SessionTreeNewWith,
+                            &[("target", Self::new_session_target_label(target, language))],
+                        ))
+                        .on_click(move |_, window, cx| {
+                            if let Some(owner) = owner.upgrade() {
+                                owner.update(cx, |this, cx| {
+                                    if this.side_panel.view == PanelView::Git {
+                                        this.side_panel.open = false;
+                                    }
+                                    this.create_session(target, window, cx);
+                                });
+                            }
+                        }),
+                    );
+                }
+                menu = menu.separator().label(language.text(Message::SessionTreeDefault));
                 for target in nebula_settings::NewSessionTarget::ALL {
                     let owner = owner.clone();
                     menu = menu.item(
@@ -258,7 +280,14 @@ impl NebulaWorkspace {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        if !self.project_tree_mode(cx) {
+        if self.turn_review_visible() { return Some(self.render_turn_review_header(cx)); }
+        let terminal = self.tabs.get(self.active).is_some_and(WorkspaceTab::is_terminal);
+        if !self.project_tree_mode(cx)
+            && !(terminal
+                && self.tabs_position == nebula_settings::TabsPositionName::Sidebar
+                && !self.settings_open
+                && !self.reader_focus_active(cx))
+        {
             return None;
         }
         let language = crate::gpui_shell::config::ui_language(cx);
@@ -309,7 +338,7 @@ impl NebulaWorkspace {
                         ),
                 )
                 .when(!changes, |row| {
-                    row.child(
+                    row.when(terminal, |row| row.child(self.render_terminal_controls(cx))).child(
                         Button::new("workbench-review-changes")
                             .small()
                             .label(language.text(Message::WorkbenchViewChanges))
@@ -330,6 +359,77 @@ impl NebulaWorkspace {
                 )
                 .into_any_element(),
         )
+    }
+
+    fn render_terminal_controls(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let language = crate::gpui_shell::config::ui_language(cx);
+        let owner = cx.entity().downgrade();
+        h_flex()
+            .gap_1()
+            .flex_shrink_0()
+            .child(
+                Button::new("workbench-new-shell")
+                    .ghost()
+                    .small()
+                    .icon(IconName::SquareTerminal)
+                    .label(language.text(Message::WorkbenchNewTerminal))
+                    .on_click(cx.listener(|this, _, window, cx| this.add_terminal(window, cx))),
+            )
+            .child(
+                DropdownButton::new("workbench-split-options")
+                    .ghost()
+                    .small()
+                    .tooltip(language.text(Message::WorkbenchSplitTerminal))
+                    .button(
+                        Button::new("workbench-split-terminal")
+                            .ghost()
+                            .small()
+                            .icon(IconName::PanelRight)
+                            .label(language.text(Message::WorkbenchSplitTerminal))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.split_workbench_terminal(
+                                    SplitDirection::LeftRight,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for (direction, message) in [
+                            (SplitDirection::LeftRight, Message::TabMenuSplitLeftRight),
+                            (SplitDirection::TopBottom, Message::TabMenuSplitTopBottom),
+                        ] {
+                            let owner = owner.clone();
+                            menu = menu.item(PopupMenuItem::new(language.text(message)).on_click(
+                                move |_, window, cx| {
+                                    if let Some(owner) = owner.upgrade() {
+                                        owner.update(cx, |this, cx| {
+                                            this.split_workbench_terminal(direction, window, cx);
+                                        });
+                                    }
+                                },
+                            ));
+                        }
+                        menu
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn split_workbench_terminal(
+        &mut self,
+        direction: SplitDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.split_focused(direction, window, cx) {
+            Ok(_) => {
+                let id = self.meta(self.active).runtime_id.clone();
+                self.projects.expanded_sessions.insert(id);
+                cx.notify();
+            },
+            Err(error) => window.push_notification(Notification::error(error.message), cx),
+        }
     }
 
     pub(super) fn workbench_empty_review(&self, cx: &App) -> bool {

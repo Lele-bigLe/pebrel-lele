@@ -34,7 +34,8 @@ impl NebulaWorkspace {
                 let review = target.clone();
                 let pull = target.clone();
                 let push = target.clone();
-                let (location, busy, ahead) = target
+                let fetch = target.clone();
+                let (location, busy, ahead, publish, can_push) = target
                     .upgrade()
                     .map(|owner| {
                         let workspace = owner.read(cx);
@@ -42,11 +43,29 @@ impl NebulaWorkspace {
                             workspace.side_panel.git_location(),
                             workspace.side_panel.op_running(),
                             workspace.side_panel.git_snapshot().map_or(0, |info| info.ahead),
+                            workspace
+                                .side_panel
+                                .git_snapshot()
+                                .is_some_and(|info| info.upstream.is_none()),
+                            workspace.side_panel.git_snapshot().is_some_and(|info| info.can_push()),
                         )
                     })
-                    .unwrap_or((None, true, 0));
+                    .unwrap_or((None, true, 0, false, false));
                 let push_location = location.clone();
-                menu.item(
+                let fetch_location = location.clone();
+                menu.item(PopupMenuItem::new(language.text(Message::GitControlsFetch))
+                    .disabled(busy || fetch_location.is_none())
+                    .on_click(move |_, _, cx| {
+                        if let Some(owner) = fetch.upgrade() {
+                            owner.update(cx, |this, cx| {
+                                if fetch_location.is_some() && this.side_panel.git_location() == fetch_location {
+                                    this.side_panel.git_fetch();
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    }))
+                .item(
                     PopupMenuItem::new(language.text(Message::VcsPull))
                         .disabled(busy || location.is_none())
                         .on_click(move |_, _, cx| {
@@ -63,12 +82,14 @@ impl NebulaWorkspace {
                         }),
                 )
                 .item(
-                    PopupMenuItem::new(if ahead > 0 {
+                    PopupMenuItem::new(if publish {
+                        language.text(Message::GitControlsPublishBranch).to_owned()
+                    } else if ahead > 0 {
                         language.format(Message::VcsPushAhead, &[("count", &ahead.to_string())])
                     } else {
                         language.text(Message::VcsPush).to_owned()
                     })
-                    .disabled(busy || push_location.is_none() || ahead == 0)
+                    .disabled(busy || push_location.is_none() || !can_push)
                     .on_click(move |_, _, cx| {
                         if let Some(owner) = push.upgrade() {
                             owner.update(cx, |this, cx| {

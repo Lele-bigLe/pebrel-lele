@@ -96,6 +96,9 @@ impl NebulaWorkspace {
                         div().text_xs().text_color(theme.primary).child(format!("↑{}", info.ahead)),
                     )
                 })
+                .when(info.vcs == VcsKind::Git && info.behind > 0, |row| {
+                    row.child(div().text_xs().text_color(muted).child(format!("↓{}", info.behind)))
+                })
                 .when(info.vcs == VcsKind::Svn, |row| {
                     row.child(
                         div()

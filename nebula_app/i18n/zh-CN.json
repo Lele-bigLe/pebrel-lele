@@ -1,5 +1,8 @@
 {
   "turn_changes": {
+    "return_session": "返回会话",
+    "unknown": "状态未知",
+    "pending": "本轮仍在运行，完成后可能会保存原生文件补丁。可返回全部回合并刷新。",
     "title": "回合变更",
     "hint": "查看当前 Codex 会话保存的逐轮补丁，最新回合在前。",
     "identifying": "正在识别 Codex 原生会话，请稍后。",
@@ -14,7 +17,9 @@
     "interrupted": "已中断",
     "empty": "尚未找到已保存的回合，Codex 保存后可刷新查看。",
     "no_patch": "本轮没有记录已完成的文件补丁。通过命令或外部工具修改的文件，可能没有逐轮补丁记录。",
-    "unavailable": "未找到 Codex 原生 CLI 或会话目录。",
+    "unavailable": "无法启动 Codex 原生 CLI，请检查 Codex 安装及 Pebrel 可用的命令路径。",
+    "missing_home": "无法定位 Codex 配置目录，请检查 CODEX_HOME 或用户目录。",
+    "rejected": "Codex 拒绝读取历史（RPC {code}），请确认该会话仍在当前 Codex 配置目录中。",
     "unsupported": "当前 Codex 不支持分页回合历史，请更新 Codex 后重试。",
     "failed": "读取回合变更失败，请刷新重试；会话可能尚未落盘，或当前 Codex 无法读取。",
     "step": "本轮第 {index} / {count} 次编辑 · 分步查看每次修改",
@@ -147,6 +152,13 @@
     "select_hint": "单击选择一行，Shift 单击选择多行并批注"
   },
   "git_controls": {
+    "up_to_date": "无待同步提交",
+    "commit_first": "提交后可发布分支",
+    "tracking_hint": "基于本地跟踪分支状态。可在仓库菜单中“获取远端更新”，再查看最新远端状态。",
+    "fetch": "获取远端更新",
+    "pull_first": "先快进拉取更新，再按需推送；分支已经分叉时，需要明确执行合并或变基。",
+    "publish_branch": "发布分支",
+    "publish_hint": "按照 Git 配置的推送远程发布当前分支，并建立跟踪关系。",
     "view_files": "文件",
     "view_history": "历史",
     "commit_options": "提交操作",
@@ -205,6 +217,7 @@
     "unavailable": "Worktree 目录不可用"
   },
   "tasks": {
+    "next_unread": "跳转下一条未读通知（全部项目）",
     "title": "任务与通知",
     "hint": "查看本窗口的任务与通知",
     "unread": "未读",
@@ -219,6 +232,10 @@
     "all_projects": "包含全部项目"
   },
   "workbench": {
+    "return_session": "返回上一个会话或分屏",
+    "new_terminal": "新建终端",
+    "split_terminal": "分屏终端",
+    "find_session": "查找所有项目中的会话",
     "view_changes": "查看改动",
     "files": "浏览项目文件",
     "choose_file": "从左侧选择一个文件，开始查看改动。",
@@ -396,6 +413,7 @@
     "ungrouped": "未分组",
     "add": "添加项目…",
     "choose_directory": "选择项目目录…",
+    "drop_folders_only": "请拖入可访问的文件夹以添加项目。",
     "sessions": "会话",
     "move_session": "移动到项目",
     "menu_item": "{name} · {count}",

@@ -40,6 +40,8 @@ impl Render for NebulaWorkspace {
             self.settings_surface
                 .as_ref()
                 .map(|(view, _)| gpui::IntoElement::into_any_element(view.clone()))
+        } else if let Some(review) = self.turn_review_view() {
+            Some(div().size_full().min_h_0().p_3().child(review).into_any_element())
         } else if self.workbench_empty_review(cx) {
             Some(
                 div()

@@ -8,7 +8,7 @@ use std::time::Duration;
 use gpui::{Context, Window};
 use nebula_split::SplitTree;
 
-mod changes;
+pub(super) mod changes;
 mod recovery;
 mod shortcuts;
 mod updates;
@@ -181,6 +181,15 @@ impl NebulaWorkspace {
 
     pub(super) fn create_default_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = Self::new_session_target(cx);
+        self.create_session(target, window, cx);
+    }
+
+    pub(super) fn create_session(
+        &mut self,
+        target: nebula_settings::NewSessionTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if target == nebula_settings::NewSessionTarget::Shell {
             self.add_terminal(window, cx);
             return;

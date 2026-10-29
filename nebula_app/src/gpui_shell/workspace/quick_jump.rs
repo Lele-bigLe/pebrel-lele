@@ -12,6 +12,51 @@ const DIRECTORY_LIMIT: usize = 128;
 const AI_SESSION_LIMIT: usize = 30;
 
 impl NebulaWorkspace {
+    pub(super) fn open_session_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_palette_state();
+        self.command_manager_open = false;
+        self.shell_picker_open = false;
+        let language = workspace_ui_language();
+        let mut rows: Vec<_> = tab_rows(self, cx, language)
+            .into_iter()
+            .filter_map(|mut row| {
+                let index = match row.action {
+                    WorkspacePaletteAction::FocusTab(index)
+                    | WorkspacePaletteAction::FocusPane { tab: index, .. } => index,
+                    _ => return None,
+                };
+                if !self.tabs.get(index).is_some_and(WorkspaceTab::is_terminal) {
+                    return None;
+                }
+                row.group = self.meta(index).project_root.as_ref().map_or_else(
+                    || language.text(crate::i18n::Message::ProjectUngrouped).to_owned(),
+                    |root| {
+                        self.project_display_name(
+                            root,
+                            root.file_name()
+                                .unwrap_or(root.as_os_str())
+                                .to_string_lossy()
+                                .into_owned(),
+                        )
+                    },
+                );
+                row.search.push_str(&format!(" {}", row.group.to_lowercase()));
+                row.group_order = 0;
+                Some(row)
+            })
+            .collect();
+        rows.sort_by(|left, right| left.group.cmp(&right.group));
+        self.palette_override = Some(rows);
+        self.command_palette_open = true;
+        self.command_palette_selected = 0;
+        self.reset_palette_query(
+            language.text(crate::i18n::Message::WorkbenchFindSession),
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+
     pub(super) fn open_quick_jump_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.dismiss_palette_state();
         self.command_manager_open = false;
@@ -64,6 +109,12 @@ fn tab_rows(
 
     for (tab_ix, tab) in workspace.tabs.iter().enumerate() {
         let title = workspace.tab_title(tab_ix, cx).to_string();
+        let project = workspace
+            .meta(tab_ix)
+            .project_root
+            .as_ref()
+            .map(|root| root.display().to_string())
+            .unwrap_or_default();
         let (kind, icon_path) = match tab {
             WorkspaceTab::Terminal { .. } => {
                 (language.pick("终端", "Terminal"), IconName::SquareTerminal.path())
@@ -77,10 +128,15 @@ fn tab_rows(
             },
             WorkspaceTab::Code { .. } => (language.pick("代码", "Code"), IconName::File.path()),
         };
+        let tool = tab
+            .focused_view()
+            .and_then(|view| view.read(cx).session_agent())
+            .map(|agent| agent.source)
+            .unwrap_or_else(|| kind.to_owned());
         let hint = if tab_ix == workspace.active {
-            format!("{current} · {kind}")
+            format!("{current} · {tool} · {project}")
         } else {
-            format!("{} {} · {kind}", language.pick("标签", "Tab"), tab_ix + 1)
+            format!("{tool} · {project}")
         };
         rows.push(WorkspacePaletteRow {
             group_order: 0,
@@ -88,7 +144,8 @@ fn tab_rows(
             label: title.clone(),
             hint,
             hint_style: super::WorkspacePaletteHintStyle::Metadata,
-            search: format!("{title} {kind} tab 标签 biaoqian {}", tab_ix + 1).to_lowercase(),
+            search: format!("{title} {kind} {tool} {project} tab 标签 biaoqian {}", tab_ix + 1)
+                .to_lowercase(),
             action: WorkspacePaletteAction::FocusTab(tab_ix),
             icon: None,
             icon_glyph: None,
@@ -96,6 +153,9 @@ fn tab_rows(
         });
 
         let WorkspaceTab::Terminal { panes, focused, .. } = tab else { continue };
+        if panes.len() < 2 {
+            continue;
+        }
         for pane in panes {
             let view = pane.view.read(cx);
             let pane_title = view.tab_label();
