@@ -1576,7 +1576,9 @@ impl NebulaWorkspace {
         if tab_ix == self.active
             && matches!(self.tabs.get(tab_ix), Some(WorkspaceTab::Terminal { focused, panes, .. })
                 if *focused != pane_id && panes.iter().any(|pane| pane.id == pane_id))
-        { self.remember_terminal_focus(); }
+        {
+            self.remember_terminal_focus();
+        }
         {
             let Some(WorkspaceTab::Terminal { panes, focused, .. }) = self.tabs.get_mut(tab_ix)
             else {
@@ -1731,7 +1733,10 @@ impl NebulaWorkspace {
     /// ctrl+shift+w（对齐旧壳 CloseTab 语义）：tab 有分屏时关聚焦 pane，
     /// 单 pane 时关整个 tab；设置 tab 直接关 tab。
     fn close_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.turn_review_visible() { self.close_turn_review(window, cx); return; }
+        if self.turn_review_visible() {
+            self.close_turn_review(window, cx);
+            return;
+        }
         if self.settings_open {
             self.close_settings(window, cx);
             return;
@@ -2174,7 +2179,9 @@ impl NebulaWorkspace {
         view: crate::display::side_panel::PanelView,
         cx: &mut Context<Self>,
     ) {
-        if view == crate::display::side_panel::PanelView::Git { self.hide_turn_review(); }
+        if view == crate::display::side_panel::PanelView::Git {
+            self.hide_turn_review();
+        }
         if !self.side_panel.open {
             self.toggle_side_panel(view, cx);
             return;

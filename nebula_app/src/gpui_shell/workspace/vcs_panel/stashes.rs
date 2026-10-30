@@ -53,18 +53,22 @@ impl NebulaWorkspace {
                     .unwrap_or((None, true, 0, false, false));
                 let push_location = location.clone();
                 let fetch_location = location.clone();
-                menu.item(PopupMenuItem::new(language.text(Message::GitControlsFetch))
-                    .disabled(busy || fetch_location.is_none())
-                    .on_click(move |_, _, cx| {
-                        if let Some(owner) = fetch.upgrade() {
-                            owner.update(cx, |this, cx| {
-                                if fetch_location.is_some() && this.side_panel.git_location() == fetch_location {
-                                    this.side_panel.git_fetch();
-                                    cx.notify();
-                                }
-                            });
-                        }
-                    }))
+                menu.item(
+                    PopupMenuItem::new(language.text(Message::GitControlsFetch))
+                        .disabled(busy || fetch_location.is_none())
+                        .on_click(move |_, _, cx| {
+                            if let Some(owner) = fetch.upgrade() {
+                                owner.update(cx, |this, cx| {
+                                    if fetch_location.is_some()
+                                        && this.side_panel.git_location() == fetch_location
+                                    {
+                                        this.side_panel.git_fetch();
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        }),
+                )
                 .item(
                     PopupMenuItem::new(language.text(Message::VcsPull))
                         .disabled(busy || location.is_none())

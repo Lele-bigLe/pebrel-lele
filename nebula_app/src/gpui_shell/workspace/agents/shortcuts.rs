@@ -142,7 +142,13 @@ impl NebulaWorkspace {
                                 {
                                     if let Some(owner) = history_owner.upgrade() {
                                         owner.update(cx, |this, cx| {
-                                            this.open_turn_review(thread.clone(), root.clone(), pane, window, cx);
+                                            this.open_turn_review(
+                                                thread.clone(),
+                                                root.clone(),
+                                                pane,
+                                                window,
+                                                cx,
+                                            );
                                         });
                                     }
                                 }

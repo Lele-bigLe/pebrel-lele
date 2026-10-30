@@ -2,8 +2,8 @@
 use super::*;
 use crate::i18n::Message;
 use projects::ProjectFilter;
-mod sessions;
 mod overview;
+mod sessions;
 
 pub(super) const TREE_INDENT: f32 = 16.0;
 pub(super) const TREE_SLOT: f32 = 20.0;
@@ -54,5 +54,4 @@ impl NebulaWorkspace {
         }
         self.ensure_side_panel_polling(cx);
     }
-
 }

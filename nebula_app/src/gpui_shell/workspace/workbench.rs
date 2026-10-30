@@ -280,7 +280,9 @@ impl NebulaWorkspace {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        if self.turn_review_visible() { return Some(self.render_turn_review_header(cx)); }
+        if self.turn_review_visible() {
+            return Some(self.render_turn_review_header(cx));
+        }
         let terminal = self.tabs.get(self.active).is_some_and(WorkspaceTab::is_terminal);
         if !self.project_tree_mode(cx)
             && !(terminal

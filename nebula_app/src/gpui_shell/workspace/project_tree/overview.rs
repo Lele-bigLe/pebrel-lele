@@ -149,7 +149,9 @@ impl NebulaWorkspace {
                 let new_root = root.clone();
                 let active = self.tab_meta.get(self.active).is_some_and(|meta| {
                     match (meta.project_root.as_ref(), root.as_ref()) {
-                        (Some(current), Some(root)) => crate::project_library::same_root(current, root),
+                        (Some(current), Some(root)) => {
+                            crate::project_library::same_root(current, root)
+                        },
                         (None, None) => true,
                         _ => false,
                     }
@@ -448,10 +450,14 @@ impl NebulaWorkspace {
                     .small()
                     .icon(IconName::Ellipsis)
                     .tooltip(crate::gpui_shell::config::ui_language(cx).text(Message::ChromeMore))
-                    .aria_label(crate::gpui_shell::config::ui_language(cx).text(Message::ChromeMore))
+                    .aria_label(
+                        crate::gpui_shell::config::ui_language(cx).text(Message::ChromeMore),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        if let Some(index) = this.tab_meta.iter().position(|meta| meta.runtime_id == more_id) {
+                        if let Some(index) =
+                            this.tab_meta.iter().position(|meta| meta.runtime_id == more_id)
+                        {
                             this.open_tab_context_menu(index, window.mouse_position(), window, cx);
                         }
                     })),

@@ -249,35 +249,54 @@ impl NebulaWorkspace {
 
     pub(super) fn render_task_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let language = crate::gpui_shell::config::ui_language(cx);
-        let unread = self
-            .task_inbox
-            .entries
-            .iter()
-            .filter(|entry| !entry.read)
-            .count();
-        h_flex().gap_0().child(Button::new("workspace-tasks")
-            .ghost()
-            .small()
-            .icon(IconName::Bell)
-            .selected(self.task_inbox.open)
-            .aria_label(language.text(Message::TasksTitle))
-            .tooltip(language.text(Message::TasksHint))
-            .when(unread > 0, |button| {
-                button.label(if unread > 99 { "99+".into() } else { unread.to_string() })
+        let unread = self.task_inbox.entries.iter().filter(|entry| !entry.read).count();
+        h_flex()
+            .gap_0()
+            .child(
+                Button::new("workspace-tasks")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Bell)
+                    .selected(self.task_inbox.open)
+                    .aria_label(language.text(Message::TasksTitle))
+                    .tooltip(language.text(Message::TasksHint))
+                    .when(unread > 0, |button| {
+                        button.label(if unread > 99 { "99+".into() } else { unread.to_string() })
+                    })
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_task_inbox(window, cx)),
+                    ),
+            )
+            .when(unread > 0, |row| {
+                row.child(
+                    Button::new("workspace-next-unread")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::ChevronRight)
+                        .tooltip(language.text(Message::TasksNextUnread))
+                        .disabled(
+                            !self
+                                .task_inbox
+                                .entries
+                                .iter()
+                                .any(|entry| !entry.read && self.tab_of_pane(entry.pane).is_some()),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let pane = this
+                                .task_inbox
+                                .entries
+                                .iter()
+                                .find(|entry| !entry.read && this.tab_of_pane(entry.pane).is_some())
+                                .map(|entry| entry.pane);
+                            if let Some(pane) = pane
+                                && let Some(tab) = this.tab_of_pane(pane)
+                            {
+                                this.dismiss_task_inbox();
+                                this.reveal_session_pane(tab, pane, window, cx);
+                            }
+                        })),
+                )
             })
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_task_inbox(window, cx))))
-            .when(unread > 0, |row| row.child(
-                Button::new("workspace-next-unread").ghost().xsmall().icon(IconName::ChevronRight)
-                    .tooltip(language.text(Message::TasksNextUnread))
-                    .disabled(!self.task_inbox.entries.iter().any(|entry| !entry.read && self.tab_of_pane(entry.pane).is_some()))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let pane = this.task_inbox.entries.iter().find(|entry| !entry.read && this.tab_of_pane(entry.pane).is_some()).map(|entry| entry.pane);
-                        if let Some(pane) = pane && let Some(tab) = this.tab_of_pane(pane) {
-                            this.dismiss_task_inbox();
-                            this.reveal_session_pane(tab, pane, window, cx);
-                        }
-                    }))
-            ))
     }
 
     pub(super) fn render_task_inbox(

@@ -627,7 +627,9 @@ impl NebulaWorkspace {
             )
             .child(
                 Button::new("workspace-return-session")
-                    .ghost().small().icon(IconName::ArrowLeft)
+                    .ghost()
+                    .small()
+                    .icon(IconName::ArrowLeft)
                     .disabled(!self.previous_focus_available())
                     .tooltip(language.text(Message::WorkbenchReturnSession))
                     .on_click(cx.listener(|this, _, window, cx| {
