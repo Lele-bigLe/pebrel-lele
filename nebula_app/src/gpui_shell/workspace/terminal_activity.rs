@@ -269,9 +269,13 @@ mod tests {
         window.run_until_parked();
         draw(&mut window);
         draw(&mut window);
-        // The project-picker Popover requests one frame on its first bounds capture.
-        // Consume that mount frame before measuring the steady shared spinner clock.
-        assert_eq!(spinner_tick(&mut window), 2, "project picker mount plus shared spinner");
+        // Project and split picker Popovers each request a frame on first bounds capture.
+        // Consume those mount frames before measuring the steady shared spinner clock.
+        assert_eq!(
+            spinner_tick(&mut window),
+            3,
+            "project and split picker mounts plus shared spinner"
+        );
         for terminal in terminals.iter().take(pane_counts[0]) {
             assert!(painted(terminal, &mut window).text.contains("cache-output"));
         }
