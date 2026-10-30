@@ -6,6 +6,18 @@ Every release entry is provided in English and Simplified Chinese.
 
 ## 2.2.3 - 2026-10-30
 
+- `Pebrel-v2.2.3-linux-x64-preview.AppImage`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-linux-x64-preview.deb`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-linux-x64-preview.tar.gz`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-macos-arm64-preview.dmg`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-macos-x64-preview.dmg`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-windows-x64.zip`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-windows-x64-setup.exe`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-windows-arm64.zip`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-windows-arm64-setup.exe`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-android-universal-preview.apk`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-relay-manual.tar.gz`: `PENDING FINAL BUILD`
+
 ### English
 
 The first public release of the Lele customization. Windows packages include portable ZIPs and installers; Linux, macOS and Android packages retain their Preview labels.
@@ -55,20 +67,6 @@ Lele 定制版的首个公开版本。Windows 提供便携 ZIP 和安装包；Li
 Customization maintained by [Lele-bigLe](https://github.com/Lele-bigLe), based on [Kuddev/pebrel](https://github.com/Kuddev/pebrel).
 
 定制版由 [Lele-bigLe](https://github.com/Lele-bigLe) 维护，基于 [Kuddev/pebrel](https://github.com/Kuddev/pebrel)。
-
-### SHA256
-
-- `Pebrel-v2.2.3-linux-x64-preview.AppImage`: `PENDING FINAL BUILD`
-- `Pebrel-v2.2.3-linux-x64-preview.deb`: `PENDING FINAL BUILD`
-- `Pebrel-v2.2.3-linux-x64-preview.tar.gz`: `PENDING FINAL BUILD`
-- `Pebrel-v2.2.3-macos-arm64-preview.dmg`: `PENDING FINAL BUILD`
-- `Pebrel-v2.2.3-macos-x64-preview.dmg`: `PENDING FINAL BUILD`
-- `Pebrel-v2.2.3-windows-x64.zip`: `PENDING FINAL BUILD`
-- `Pebrel-v2.2.3-windows-x64-setup.exe`: `PENDING FINAL BUILD`
-- `Pebrel-v2.2.3-windows-arm64.zip`: `PENDING FINAL BUILD`
-- `Pebrel-v2.2.3-windows-arm64-setup.exe`: `PENDING FINAL BUILD`
-- `Pebrel-v2.2.3-android-universal-preview.apk`: `PENDING FINAL BUILD`
-- `Pebrel-v2.2.3-relay-manual.tar.gz`: `PENDING FINAL BUILD`
 
 ## 2.2.2 - 2026-10-16
 
