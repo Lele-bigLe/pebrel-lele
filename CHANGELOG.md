@@ -4,6 +4,72 @@ Every release entry is provided in English and Simplified Chinese.
 
 每个版本条目均同时提供英文和简体中文说明。
 
+## 2.2.3 - 2026-10-30
+
+### English
+
+The first public release of the Lele customization. Windows packages include portable ZIPs and installers; Linux, macOS and Android packages retain their Preview labels.
+
+#### Added
+
+- Added: Browse projects, sessions and terminal panes together, open ordinary terminals or directional splits, return to the previous session and jump to unread activity. Drag folders into the application to add project workspaces.
+- Added: Keep saved Codex and Claude Code conversations in the sidebar and continue the selected original conversation on demand, checking whether it is already occupied.
+- Added: Review recorded Codex turn changes in a read-only workspace, retain the selected turn and file while returning to the terminal, and distinguish missing patches from loading errors.
+- Added: Agent-specific footer commands and stable-version update checks for Codex and Claude Code, with confirmation before upgrading.
+
+#### Improved
+
+- Improved: Git presents commit, publish, push or pull according to repository state, preserves separate commit drafts for different repositories, and offers an explicit fetch action. First publication establishes upstream tracking; a failed push can be retried after a successful commit.
+- Improved: Show official quota percentages separately from native local usage records. Codex capacity estimates and reset-card details remain in Settings, with missing data identified explicitly.
+- Improved: Git changes use a resizable side-by-side comparison with line wrapping, comments and hunk staging. Session navigation and review feedback share the existing project and pane identities.
+
+#### Fixed
+
+- Fixed: Native workspace test compilation after adding Git upstream and behind-count fields.
+- Fixed: Read recorded turn changes from older Codex item stores through a bounded, exact-conversation fallback when the first item page is unsupported.
+
+### 中文
+
+Lele 定制版的首个公开版本。Windows 提供便携 ZIP 和安装包；Linux、macOS 和 Android 安装包继续标为 Preview。
+
+#### 新增
+
+- 新增：集中浏览项目、会话和终端分屏，可直接打开普通终端或按方向分屏，返回上一个会话、跳转未读动态。支持拖入文件夹添加项目工作区。
+- 新增：已保存的 Codex、Claude Code 对话保留在侧栏，按需继续选定的原生对话，并检查是否已被其他终端占用。
+- 新增：在只读工作区查看原生记录中的 Codex 回合变更，返回终端时保留选中的回合和文件，分别提示缺失补丁与读取失败。
+- 新增：按智能体显示底部快捷指令，并检查 Codex、Claude Code 的稳定版本，升级前由用户确认。
+
+#### 改进
+
+- 改进：Git 根据仓库状态呈现提交、发布、推送或拉取操作，按仓库保留独立提交草稿，并提供手动获取远程更新入口。首次发布建立远程跟踪；提交成功而推送失败时可以重试推送。
+- 改进：官方额度百分比与本机原生用量记录分开展示。Codex 容量估算和重置卡详情保留在设置中，明确提示缺失数据。
+- 改进：Git 变更支持可调整左右比例的双栏比较、自动换行、批注和分块暂存。会话导航与审阅反馈复用既有项目和分屏身份。
+
+#### 修复
+
+- 修复：补齐 Git 远程跟踪及落后提交数字段后，原生工作区测试无法编译的问题。
+- 修复：旧版 Codex 记录存储不支持首个条目分页时，通过有界、精确对话匹配的兼容读取展示已记录的回合变更。
+
+### Contributors
+
+Customization maintained by [Lele-bigLe](https://github.com/Lele-bigLe), based on [Kuddev/pebrel](https://github.com/Kuddev/pebrel).
+
+定制版由 [Lele-bigLe](https://github.com/Lele-bigLe) 维护，基于 [Kuddev/pebrel](https://github.com/Kuddev/pebrel)。
+
+### SHA256
+
+- `Pebrel-v2.2.3-linux-x64-preview.AppImage`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-linux-x64-preview.deb`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-linux-x64-preview.tar.gz`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-macos-arm64-preview.dmg`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-macos-x64-preview.dmg`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-windows-x64.zip`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-windows-x64-setup.exe`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-windows-arm64.zip`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-windows-arm64-setup.exe`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-android-universal-preview.apk`: `PENDING FINAL BUILD`
+- `Pebrel-v2.2.3-relay-manual.tar.gz`: `PENDING FINAL BUILD`
+
 ## 2.2.2 - 2026-10-16
 
 - `Pebrel-v2.2.2-linux-x64-preview.AppImage`: `7ea76a93d49724eba09c5ba1a59b88e52047d937bca1107caa48b13b64248781`
