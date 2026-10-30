@@ -557,6 +557,8 @@ mod tests {
             plus: 0,
             minus: 0,
             ahead: 0,
+            behind: 0,
+            upstream: None,
             unstaged: vec![('?', "one.txt".into()), ('M', "two.txt".into())],
             staged: vec![('A', "three.txt".into())],
             conflicts: Vec::new(),
